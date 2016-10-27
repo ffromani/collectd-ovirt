@@ -58,6 +58,7 @@ static const char *config_keys[] = {
     "RefreshInterval"
     "Instances",
     "DomainCheck",
+    "DomainPartitioning",
     NULL
 };
 #define NR_CONFIG_KEYS ((sizeof config_keys / sizeof config_keys[0]) - 1)
@@ -68,6 +69,7 @@ struct virt2_config_s {
     size_t instances;
     cdtime_t interval; /* could be 0, and it's OK */
     int domain_check;
+    int domain_partitioning;
 };
 
 typedef struct virt2_state_s virt2_state_t;
@@ -154,6 +156,7 @@ static virt2_context_t default_context = {
         .connection_uri = "qemu:///system",
         .instances = 5,
         .domain_check = 1,
+        .domain_partitioning = 1,
     },
 };
 
@@ -173,6 +176,7 @@ static int virt2_init_func (virt2_context_t *ctx, size_t i, const char *func_nam
 
 static int virt2_refresh (user_data_t *ud);
 static int virt2_read_partition (user_data_t *ud);
+static int virt2_read_domains (user_data_t *ud);
 
 static int virt2_sample_domains (virt2_instance_t *inst, virt2_doms_t *doms);
 static int virt2_dispatch_samples (virt2_instance_t *inst, virDomainStatsRecordPtr *records, int records_num);
@@ -246,6 +250,11 @@ virt2_config (const char *key, const char *value)
         cfg->domain_check = IS_TRUE (value);
         return 0;
     }
+    if (strcasecmp (key, "DomainPartitioning") == 0)
+    {
+        cfg->domain_partitioning = IS_TRUE (value);
+        return 0;
+    }
 
     /* Unrecognised option. */
     return -1;
@@ -286,6 +295,13 @@ virt2_init (void)
                ctx->conf.connection_uri);
         return -1;
     }
+
+    if (!ctx->conf.domain_partitioning)
+    {
+        virt2_init_func (ctx, 0, "read_domains", virt2_read_domains);
+        return 0;
+    }
+
 
     // TODO: what if this fails?
     virt2_init_func (ctx, 0, "refresh", virt2_refresh);
@@ -385,6 +401,29 @@ done:
 }
 
 static int
+virt2_acquire_domains (virt2_instance_t *inst)
+{
+    int ret = 0;
+    unsigned int flags = VIR_CONNECT_LIST_DOMAINS_RUNNING;
+    ret = virConnectListAllDomains (inst->state->conn, &inst->state->all.doms, flags);
+    if (ret < 0) {
+        ERROR (PLUGIN_NAME " plugin: virConnectListAllDomains failed: %s",
+               virGetLastErrorMessage());
+        return -1;
+    }
+    inst->state->all.num = ret;
+    return 0;
+}
+
+static void
+virt2_release_domains (virt2_instance_t *inst)
+{
+    for (size_t i = 0; i < inst->state->all.num; i++)
+        virDomainFree (inst->state->all.doms[i]);
+    sfree (inst->state->all.doms);
+}
+
+static int
 virt2_refresh (user_data_t *ud)
 {
     virt2_instance_t *inst = ud->data;
@@ -395,20 +434,13 @@ virt2_refresh (user_data_t *ud)
     }
 
     // first clean up the previous round
-    for (size_t i = 0; i < inst->state->all.num; i++)
-        virDomainFree (inst->state->all.doms[i]);
-    sfree (inst->state->all.doms);
+    virt2_release_domains (inst);
 
     // now prepare the next round: get master reference
-    int ret = 0;
-    unsigned int flags = VIR_CONNECT_LIST_DOMAINS_RUNNING;
-    ret = virConnectListAllDomains (inst->state->conn, &inst->state->all.doms, flags);
-    if (ret < 0) {
-        ERROR (PLUGIN_NAME " plugin: virConnectListAllDomains failed: %s",
-               virGetLastErrorMessage());
-        return -1;
+    int ret = virt2_acquire_domains (inst);
+    if (ret != 0) {
+        return ret;
     }
-    inst->state->all.num = ret;
 
     // partition the domain set
 
@@ -436,6 +468,22 @@ virt2_sample_domains (virt2_instance_t *inst, virt2_doms_t *doms)
         ret = virt2_dispatch_samples (inst, records, records_num);
     }
     virDomainStatsRecordListFree (records);
+
+    return ret;
+}
+
+static int
+virt2_read_domains (user_data_t *ud)
+{
+    int ret = 0;
+    virt2_instance_t *inst = ud->data;
+    ret = virt2_acquire_domains (inst);
+    if (ret != 0) {
+        return ret;
+    }
+
+    ret = virt2_sample_domains (inst, &inst->state->all);
+    virt2_release_domains (inst);
 
     return ret;
 }
