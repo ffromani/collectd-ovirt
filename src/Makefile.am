@@ -21,11 +21,13 @@ monitor_la_LDFLAGS = \
 virt2_la_CFLAGS = \
 	$(AM_CFLAGS) \
 	$(PLUGIN_CFLAGS) \
+	$(GLIB2_CFLAGS) \
 	$(LIBVIRT_CFLAGS) \
 	$(LIBXML2_CFLAGS) \
 	$(NULL)
 virt2_la_LIBADD = \
 	$(AM_LDFLAGS) \
+	$(GLIB2_LIBS) \
 	$(LIBVIRT_LIBS) \
 	$(LIBXML2_LIBS) \
 	$(NULL)
