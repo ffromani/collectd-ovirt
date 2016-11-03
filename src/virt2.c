@@ -1,5 +1,5 @@
 /**
- * vmon - collectd/virt2.c
+ * collectd-ovirt/virt2.c
  * Copyright (C) 2016 Francesco Romani <fromani at redhat.com>
  * Based on
  * collectd - src/virt.c
@@ -52,11 +52,11 @@
 #define METADATA_VM_PARTITION_PREFIX "ovirt"
 
 enum {
-    PARTITION_TAG_MAX_LEN = 256,
+    PARTITION_TAG_MAX_LEN = 32,
     INSTANCES_MAX = 128,
 };
 
-static const char *virt2_config_keys[] = {
+const char *virt2_config_keys[] = {
     "Connection",
     "RefreshInterval"
     "Instances",
@@ -84,6 +84,7 @@ typedef struct virt2_instance_s virt2_instance_t;
 struct virt2_instance_s {
     virt2_state_t *state;
     const virt2_config_t *conf;
+    char tag[PARTITION_TAG_MAX_LEN];
     size_t id;
 
     size_t domains_num;
@@ -110,6 +111,13 @@ struct virt2_context_s {
     virt2_config_t conf;
 };
 
+typedef struct virt2_domain_s virt2_domain_t;
+struct virt2_domain_s {
+    virDomainPtr dom;
+    char tag[PARTITION_TAG_MAX_LEN];
+    char uuid[VIR_UUID_STRING_BUFLEN + 1];
+};
+
 typedef struct virt2_array_s virt2_array_t;
 struct virt2_array_s {
     gchar *data;
@@ -118,7 +126,7 @@ struct virt2_array_s {
 
 /* *** */
 
-static virt2_context_t default_context = {
+virt2_context_t default_context = {
     .conf = {
         /*
          * Using 0 for @stats returns all stats groups supported by the given hypervisor.
@@ -130,7 +138,7 @@ static virt2_context_t default_context = {
 };
 
 /* easier to mock for tests */
-static virt2_context_t *
+virt2_context_t *
 virt2_get_default_context ()
 {
     return &default_context;
@@ -138,19 +146,22 @@ virt2_get_default_context ()
 
 /* *** */
 
-static int virt2_get_partition_tag(const char *xml, char *tag, size_t len);
+int virt2_setup (virt2_context_t *ctx);
+int virt2_teardown (virt2_context_t *ctx);
 
-static int virt2_get_optimal_instance_count (virt2_context_t *ctx);
-static int virt2_init_func (virt2_context_t *ctx, size_t i, int (*func_body) (user_data_t *ud));
+int virt2_get_optimal_instance_count (virt2_context_t *ctx);
+int virt2_init_instance (virt2_context_t *ctx, size_t i, int (*func_body) (user_data_t *ud));
 
-static int virt2_read_domains (user_data_t *ud);
-static int virt2_sample_domains (virt2_instance_t *inst, GArray *doms);
-static int virt2_dispatch_samples (virt2_instance_t *inst, virDomainStatsRecordPtr *records, int records_num);
-static int virt2_domain_is_ready (virDomainPtr dom, size_t inst_id);
+int virt2_read_domains (user_data_t *ud);
+int virt2_sample_domains (virt2_instance_t *inst, GArray *doms);
+int virt2_dispatch_samples (virt2_instance_t *inst, virDomainStatsRecordPtr *records, int records_num);
+
+int virt2_domain_get_tag (virt2_domain_t *vdom, const char *xml);
+int virt2_domain_is_ready (virt2_domain_t *vdom, virt2_instance_t *inst);
 
 /* *** */
 
-static int
+int
 virt2_config (const char *key, const char *value)
 {
     virt2_context_t *ctx = virt2_get_default_context ();
@@ -218,7 +229,7 @@ virt2_config (const char *key, const char *value)
     return -1;
 }
 
-static int
+int
 virt2_init (void)
 {
     virt2_context_t *ctx = virt2_get_default_context ();
@@ -232,29 +243,10 @@ virt2_init (void)
         return -1;
     }
 
-    // TODO: what if this fails?
-    for (size_t i = 0; i < ctx->state.instances; i++)
-    {
-        // TODO: what if this fails?
-        virt2_init_func (ctx, i, virt2_read_domains);
-    }
-
-    if (ctx->conf.debug_partitioning)
-    {
-        ctx->state.known_tags = g_hash_table_new (g_str_hash, g_str_equal);
-        for (size_t i = 0; i < ctx->state.instances; i++)
-        {
-            // TODO
-            char inst_tag[PARTITION_TAG_MAX_LEN] = { '\0' };
-            ssnprintf (inst_tag, sizeof(inst_tag), "virt-%zu", i);
-
-            g_hash_table_add (ctx->state.known_tags, inst_tag);
-        }
-    }
-    return 0;
+    return virt2_setup (ctx);
 }
 
-static int
+int
 virt2_shutdown (void)
 {
     virt2_context_t *ctx = virt2_get_default_context ();
@@ -263,11 +255,7 @@ virt2_shutdown (void)
         virConnectClose (ctx->state.conn);
     ctx->state.conn = NULL;
 
-    if (ctx->conf.debug_partitioning)
-    {
-        g_hash_table_destroy (ctx->state.known_tags);
-    }
-    return 0;
+    return virt2_teardown (ctx);
 }
 
 void
@@ -283,21 +271,45 @@ module_register (void)
 
 /* *** */
 
-static int
+int
 virt2_get_optimal_instance_count (virt2_context_t *ctx)
 {
+    /*
+     * TODO: if ctx->conf.instances == -1, query libvirt using
+     * the ADMIN API for the worker thread pool size, and return
+     * that value.
+     */
     return ctx->conf.instances;
 }
 
-static int
-virt2_init_func (virt2_context_t *ctx, size_t i, int (*func_body) (user_data_t *ud))
+int
+virt2_setup (virt2_context_t *ctx)
 {
-    char name[DATA_MAX_NAME_LEN];  // TODO
-    ssnprintf (name, sizeof(name), "virt-%zu", i);
+    if (ctx->conf.debug_partitioning)
+        ctx->state.known_tags = g_hash_table_new (g_str_hash, g_str_equal);
 
+    for (size_t i = 0; i < ctx->state.instances; i++)
+        // TODO: what if this fails?
+        virt2_init_instance (ctx, i, virt2_read_domains);
+
+    return 0;
+}
+
+int
+virt2_teardown (virt2_context_t *ctx)
+{
+    if (ctx->conf.debug_partitioning)
+        g_hash_table_destroy (ctx->state.known_tags);
+    return 0;
+}
+
+int
+virt2_init_instance (virt2_context_t *ctx, size_t i, int (*func_body) (user_data_t *ud))
+{
     virt2_user_data_t *user_data = &(ctx->user_data[i]);
 
     virt2_instance_t *inst = &user_data->inst;
+    ssnprintf (inst->tag, sizeof (inst->tag), "virt-%zu", i);
     inst->state = &ctx->state;
     inst->conf = &ctx->conf;
     inst->id = i;
@@ -306,13 +318,16 @@ virt2_init_func (virt2_context_t *ctx, size_t i, int (*func_body) (user_data_t *
     ud->data = inst;
     ud->free_func = NULL; // TODO
 
-    return plugin_register_complex_read (NULL, name, func_body, ctx->conf.interval, ud);
+    if (ctx->conf.debug_partitioning)
+        // TODO: what if register fails?
+        g_hash_table_add (ctx->state.known_tags, inst->tag);
+    return plugin_register_complex_read (NULL, inst->tag, func_body, ctx->conf.interval, ud);
 }
 
-static int
-virt2_get_partition_tag(const char *xml, char *tag, size_t len)
+int
+virt2_domain_get_tag(virt2_domain_t *vdom, const char *xml)
 {
-    int found = 0;
+    int err = -1;
     xmlDocPtr xml_doc = NULL;
     xmlXPathContextPtr xpath_ctx = NULL;
     xmlXPathObjectPtr xpath_obj = NULL;
@@ -320,7 +335,7 @@ virt2_get_partition_tag(const char *xml, char *tag, size_t len)
     xml_doc = xmlReadDoc (xml, NULL, NULL, XML_PARSE_NONET);
     if (xml_doc == NULL)
     {
-        ERROR (PLUGIN_NAME " plugin: xmlReadDoc() failed");
+        ERROR (PLUGIN_NAME " plugin: xmlReadDoc() failed on domain %s", vdom->uuid);
         goto done;
     }
 
@@ -332,19 +347,19 @@ virt2_get_partition_tag(const char *xml, char *tag, size_t len)
     xpath_obj = xmlXPathEval(xpath_str, xpath_ctx);
     if (xpath_obj == NULL)
     {
-        ERROR (PLUGIN_NAME " plugin: xmlXPathEval(%s) failed", xpath_str);
+        ERROR (PLUGIN_NAME " plugin: xmlXPathEval(%s) failed on domain %s", xpath_str, vdom->uuid);
         goto done;
     }
 
     if (xpath_obj->type != XPATH_STRING)
     {
-        ERROR (PLUGIN_NAME " plugin: xmlXPathEval() unexpected return type %d (wanted %d)",
-               xpath_obj->type, XPATH_STRING);
+        ERROR (PLUGIN_NAME " plugin: xmlXPathEval() unexpected return type %d (wanted %d) on domain",
+               xpath_obj->type, XPATH_STRING, vdom->uuid);
         goto done;
     }
 
-    sstrncpy (tag, xpath_obj->stringval, len);
-    found = 1;
+    sstrncpy (vdom->tag, xpath_obj->stringval, sizeof (vdom->tag));
+    err = 0;
 
 done:
     if (xpath_obj)
@@ -354,10 +369,10 @@ done:
     if (xml_doc)
         xmlFreeDoc (xml_doc);
 
-    return found;
+    return err;
 }
 
-static int
+int
 virt2_acquire_domains (virt2_instance_t *inst)
 {
     int ret = 0;
@@ -373,7 +388,7 @@ virt2_acquire_domains (virt2_instance_t *inst)
     return 0;
 }
 
-static void
+void
 virt2_release_domains (virt2_instance_t *inst)
 {
     for (size_t i = 0; i < inst->domains_num; i++)
@@ -382,7 +397,7 @@ virt2_release_domains (virt2_instance_t *inst)
     inst->domains_num = 0;
 }
 
-static int
+int
 virt2_sample_domains (virt2_instance_t *inst, GArray *doms)
 {
     virDomainStatsRecordPtr *records = NULL;
@@ -391,72 +406,73 @@ virt2_sample_domains (virt2_instance_t *inst, GArray *doms)
 
     // XXX
     ret = virDomainListGetStats (((virDomainPtr *)doms->data), inst->conf->stats, &records, inst->conf->flags);
-    if (ret == -1) {
-        // TODO
-    } else {
+    if (ret == -1)
+        ;// TODO
+    else
         ret = virt2_dispatch_samples (inst, records, records_num);
-    }
     virDomainStatsRecordListFree (records);
 
     return ret;
 }
 
-static int
+int
 virt2_dispatch_samples (virt2_instance_t *inst, virDomainStatsRecordPtr *records, int records_num)
 {
     // TODO
     return 0;
 }
 
-static int
-virt2_instance_include_domain (virDomainPtr dom, size_t inst_id, const char *inst_tag, char *dom_tag, size_t dom_tag_len)
+int
+virt2_domain_init (virt2_domain_t *vdom, virDomainPtr dom)
 {
-    int include = 0;
-    if (!virt2_domain_is_ready (dom, inst_id))
-        goto decided;
+    memset(vdom, 0, sizeof(*vdom));
+    vdom->dom = dom;
+    virDomainGetUUIDString (dom, vdom->uuid);
 
     unsigned int flags = 0;
     const char *dom_xml = virDomainGetXMLDesc (dom, flags);
     if (!dom_xml)
     {
-        // TODO: ERROR
-        goto decided;
+        ERROR (PLUGIN_NAME, " plugin: domain %s don't provide XML: %s",
+               vdom->uuid, virGetLastErrorMessage());
+        return -1;
     }
 
-    int found = virt2_get_partition_tag (dom_xml, dom_tag, dom_tag_len);
-    if (dom_tag == NULL || dom_tag[0] == '\0')
-        include = (inst_id == 0);
-    else
-        include = (strcmp (dom_tag, inst_tag) == 0);
-
+    int err = virt2_domain_get_tag (vdom, dom_xml);
     sfree (dom_xml);
-decided:
-    return include;
+    return err;
 }
 
+int
+virt2_instance_include_domain (virt2_domain_t *vdom, virt2_instance_t *inst)
+{
+    if (!virt2_domain_is_ready (vdom, inst))
+        return 0;
+    
+    if (vdom->tag[0] == '\0')
+        return (inst->id == 0);
 
-static GArray *
+    return (strcmp (vdom->tag, inst->tag) == 0);
+}
+
+GArray *
 virt2_partition_domains (virt2_instance_t *inst)
 {
-    char dom_tag[PARTITION_TAG_MAX_LEN] = { '\0' };
-    char inst_tag[PARTITION_TAG_MAX_LEN] = { '\0' };
-    ssnprintf (inst_tag, sizeof(inst_tag), "virt-%zu", inst->id);
-
     GArray *doms = g_array_sized_new (TRUE, FALSE, sizeof(virDomainPtr), inst->domains_num);
 
     for (size_t i = 0; i < inst->domains_num; i++)
     {
-        if (!virt2_instance_include_domain (inst->domains_all[i], inst->id, inst_tag, dom_tag, sizeof (dom_tag)))
+        virt2_domain_t vdom = { NULL };
+        int err = virt2_domain_init (&vdom, inst->domains_all[i]);
+        if (err)
+            continue;
+
+        if (!virt2_instance_include_domain (&vdom, inst) &&
+            !g_hash_table_contains (inst->state->known_tags, vdom.tag))
         {
-            if (inst->id == 0 /* let's warn just once */ &&
-                inst->conf->debug_partitioning &&
-               !g_hash_table_contains (inst->state->known_tags, dom_tag))
-            {
-                char dom_uuid[VIR_UUID_STRING_BUFLEN + 1] = { '\0' };
-                virDomainGetUUIDString (inst->domains_all[i], dom_uuid);
-                WARNING (PLUGIN_NAME, " plugin#%zu: domain %s has tag %s unhandled by any instance",
-                         inst->id, dom_uuid, dom_tag);
-            }
+            if (inst->conf->debug_partitioning && inst->id == 0 /* let's warn just once */)
+                WARNING (PLUGIN_NAME, " plugin#%s: domain %s has tag %s unhandled by any instance",
+                         inst->tag, vdom.uuid, vdom.tag);
             continue;
         }
 
@@ -466,7 +482,7 @@ virt2_partition_domains (virt2_instance_t *inst)
     return doms;
 }
 
-static int
+int
 virt2_read_domains (user_data_t *ud)
 {
     virt2_instance_t *inst = ud->data;
@@ -502,25 +518,22 @@ done:
     return err;
 }
 
-static int
-virt2_domain_is_ready(virDomainPtr dom, size_t inst_id)
+int
+virt2_domain_is_ready(virt2_domain_t *vdom, virt2_instance_t *inst)
 {
-    char dom_uuid[VIR_UUID_STRING_BUFLEN + 1] = { '\0' };
-    virDomainGetUUIDString (dom, dom_uuid);
-
     virDomainControlInfo info;
-    int err = virDomainGetControlInfo (dom, &info, 0);
+    int err = virDomainGetControlInfo (vdom->dom, &info, 0);
     if (err)
     {
-        ERROR (PLUGIN_NAME " plugin#%zu: virtDomainGetControlInfo(%s) failed: %s",
-               inst_id, dom_uuid, virGetLastErrorMessage());
+        ERROR (PLUGIN_NAME " plugin#%s: virtDomainGetControlInfo(%s) failed: %s",
+               inst->tag, vdom->uuid, virGetLastErrorMessage());
         return 0;
     }
 
     if (info.state != VIR_DOMAIN_CONTROL_OK)
     {
-        DEBUG (PLUGIN_NAME " plugin#%zu: domain %s state %d expected %d: skipped",
-               inst_id, dom_uuid, info.state, VIR_DOMAIN_CONTROL_OK);
+        DEBUG (PLUGIN_NAME " plugin#%s: domain %s state %d expected %d: skipped",
+               inst->tag, vdom->uuid, info.state, VIR_DOMAIN_CONTROL_OK);
         return 0;
     }
 

@@ -1,5 +1,5 @@
 
-PLUGIN_CFLAGS = -DPLUGIN_FUNC=static -I${top_srcdir}/include
+PLUGIN_CFLAGS = -DPLUGIN_SYMBOL=static -I${top_srcdir}/include
 PLUGIN_LDFLAGS = -module -avoid-version -export-symbols-regex '\<module_register\>'
 
 lib_LTLIBRARIES = \
