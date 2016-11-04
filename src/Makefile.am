@@ -18,6 +18,10 @@ monitor_la_LDFLAGS = \
 	$(PLUGIN_LDFLAGS) \
 	$(NULL)
 
+virt2_la_SOURCES = \
+	vminfo.c \
+	virt2.c \
+	$(NULL)
 virt2_la_CFLAGS = \
 	$(AM_CFLAGS) \
 	$(PLUGIN_CFLAGS) \

@@ -23,8 +23,6 @@
  *   Richard W.M. Jones <rjones at redhat.com>
  **/
 
-#include "collectd.h"
-
 #include <glib.h>
 
 #include <libvirt/libvirt.h>
@@ -33,6 +31,9 @@
 #include <libxml/parser.h>
 #include <libxml/tree.h>
 #include <libxml/xpath.h>
+
+#include "collectd.h"
+#include "vminfo.h"
 
 
 #define PLUGIN_NAME "virt2"
@@ -84,12 +85,13 @@ typedef struct virt2_instance_s virt2_instance_t;
 struct virt2_instance_s {
   virt2_state_t *state;
   const virt2_config_t *conf;
+
+  GArray *doms;
+  virDomainPtr *domains_all;
+  size_t domains_num;
+
   char tag[PARTITION_TAG_MAX_LEN];
   size_t id;
-
-  size_t domains_num;
-  virDomainPtr *domains_all;
-  GArray *doms;
 };
 
 typedef struct virt2_user_data_s virt2_user_data_t;
@@ -100,8 +102,8 @@ struct virt2_user_data_s {
 
 struct virt2_state_s {
   virConnectPtr conn;
-  size_t instances;
   GHashTable *known_tags;
+  size_t instances;
 };
 
 typedef struct virt2_context_s virt2_context_t;
@@ -183,23 +185,21 @@ static int
 virt2_domain_get_tag(virt2_domain_t *vdom, const char *xml)
 {
   int err = -1;
-  xmlDocPtr xml_doc = NULL;
-  xmlXPathContextPtr xpath_ctx = NULL;
-  xmlXPathObjectPtr xpath_obj = NULL;
 
-  xml_doc = xmlReadDoc (xml, NULL, NULL, XML_PARSE_NONET);
+  xmlDocPtr xml_doc = xmlReadDoc (xml, NULL, NULL, XML_PARSE_NONET);
   if (xml_doc == NULL)
   {
     ERROR (PLUGIN_NAME " plugin: xmlReadDoc() failed on domain %s", vdom->uuid);
     goto done;
   }
 
-  xpath_ctx = xmlXPathNewContext (xml_doc);
+  xmlXPathContextPtr xpath_ctx = xmlXPathNewContext (xml_doc);
 
   char xpath_str[PARTITION_TAG_MAX_LEN] = { '\0' };
-  ssnprintf (xpath_str, sizeof(xpath_str), "/domain/metadata/%s:%s",
+  ssnprintf (xpath_str, sizeof (xpath_str), "/domain/metadata/%s:%s",
              METADATA_VM_PARTITION_PREFIX, METADATA_VM_PARTITION_ELEMENT);
-  xpath_obj = xmlXPathEval(xpath_str, xpath_ctx);
+  
+  xmlXPathObjectPtr xpath_obj = xmlXPathEval (xpath_str, xpath_ctx);
   if (xpath_obj == NULL)
   {
     ERROR (PLUGIN_NAME " plugin: xmlXPathEval(%s) failed on domain %s", xpath_str, vdom->uuid);
@@ -230,9 +230,8 @@ done:
 static int
 virt2_acquire_domains (virt2_instance_t *inst)
 {
-  int ret = 0;
   unsigned int flags = VIR_CONNECT_LIST_DOMAINS_RUNNING;
-  ret = virConnectListAllDomains (inst->state->conn, &inst->domains_all, flags);
+  int ret = virConnectListAllDomains (inst->state->conn, &inst->domains_all, flags);
   if (ret < 0)
   {
     ERROR (PLUGIN_NAME " plugin#%zu: virConnectListAllDomains failed: %s",
@@ -255,7 +254,13 @@ virt2_release_domains (virt2_instance_t *inst)
 static int
 virt2_dispatch_samples (virt2_instance_t *inst, virDomainStatsRecordPtr *records, int records_num)
 {
-  // TODO
+  for (int i = 0; i < records_num; i++) {
+    VMInfo vm;
+    vminfo_init(&vm);
+    vminfo_parse(&vm, records[i]);
+    // TODO: use the VMInfo data
+    vminfo_free(&vm);
+  }
   return 0;
 }
 
@@ -263,15 +268,13 @@ static int
 virt2_sample_domains (virt2_instance_t *inst, GArray *doms)
 {
   virDomainStatsRecordPtr *records = NULL;
-  int records_num = 0;
-  int ret = 0;
-
-  // XXX
-  ret = virDomainListGetStats (((virDomainPtr *)doms->data), inst->conf->stats, &records, inst->conf->flags);
+  int ret = virDomainListGetStats (((virDomainPtr *)doms->data),
+                                   inst->conf->stats, &records, inst->conf->flags);
   if (ret == -1)
-    ;// TODO
-  else
-    ret = virt2_dispatch_samples (inst, records, records_num);
+    return ret;
+  
+  int records_num = ret;
+  ret = virt2_dispatch_samples (inst, records, records_num);
   virDomainStatsRecordListFree (records);
 
   return ret;
@@ -325,8 +328,19 @@ virt2_instance_include_domain (virt2_domain_t *vdom, virt2_instance_t *inst)
 {
   if (!virt2_domain_is_ready (vdom, inst))
     return 0;
-  if (vdom->tag[0] == '\0')
-    return (inst->id == 0);
+  /* instance#0 will always be there, so it is in charge of extra duties */
+  if (inst->id == 0)
+  {
+    if (vdom->tag[0] == '\0' || 
+        !g_hash_table_contains (inst->state->known_tags, vdom->tag))
+    {
+      if (inst->conf->debug_partitioning)
+          WARNING (PLUGIN_NAME, " plugin#%s: adopted domain %s "
+                   "with unknown tag '%s'",
+                   inst->tag, vdom->uuid, vdom->tag);
+      return 1;
+    }
+  }
   return (strcmp (vdom->tag, inst->tag) == 0);
 }
 
@@ -342,14 +356,8 @@ virt2_partition_domains (virt2_instance_t *inst)
     if (err)
       continue;
 
-    if (!virt2_instance_include_domain (&vdom, inst) &&
-        !g_hash_table_contains (inst->state->known_tags, vdom.tag))
-    {
-      if (inst->conf->debug_partitioning && inst->id == 0 /* let's warn just once */)
-        WARNING (PLUGIN_NAME, " plugin#%s: domain %s has tag %s unhandled by any instance",
-                 inst->tag, vdom.uuid, vdom.tag);
+    if (!virt2_instance_include_domain (&vdom, inst))
       continue;
-    }
 
     g_array_append_val (doms, (inst->domains_all[i]));
   }
