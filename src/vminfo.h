@@ -123,6 +123,9 @@ struct StateInfo {
 typedef struct VMInfo VMInfo;
 struct VMInfo {
     char uuid[VIR_UUID_STRING_BUFLEN];
+    virDomainInfo info;
+    virDomainMemoryStatStruct memstats[VIR_DOMAIN_MEMORY_STAT_NR];
+    int memstats_count;
 
     StateInfo state;
     PCpuInfo pcpu;
@@ -143,7 +146,8 @@ vminfo_init(VMInfo *vm);
 
 int
 vminfo_parse(VMInfo *vm,
-             const virDomainStatsRecordPtr record);
+             const virDomainStatsRecordPtr record,
+             int extrainfo);
 
 void
 vminfo_free(VMInfo *vm);

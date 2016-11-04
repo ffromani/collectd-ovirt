@@ -327,15 +327,31 @@ ifaceinfo_parse(IFaceInfo *iface,
 
 int
 vminfo_parse(VMInfo *vm,
-             const virDomainStatsRecordPtr record)
+             const virDomainStatsRecordPtr record,
+             int extrainfo)
 {
     int i = 0;
 
     if (vminfo_setup(vm, record)) {
         return -1;
     }
+
     if (virDomainGetUUIDString(record->dom, vm->uuid) < 0) {
         return -1;
+    }
+    if (extrainfo) {
+        int ret;
+        if (virDomainGetInfo(record->dom, &vm->info) < 0) {
+            return -1;
+        }
+        ret = virDomainMemoryStats(record->dom, vm->memstats, VIR_DOMAIN_MEMORY_STAT_NR, 0);
+        if (ret < 0) {
+            return -1;
+        }
+        vm->memstats_count = ret;
+    } else {
+        memset(&vm->info, 0, sizeof(vm->info));
+        memset(&vm->memstats, 0, sizeof(vm->memstats));
     }
 
     for (i = 0; i < record->nparams; i++) {

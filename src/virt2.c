@@ -55,6 +55,7 @@
 enum {
   PARTITION_TAG_MAX_LEN = 32,
   INSTANCES_MAX = 128,
+  VM_VALUES_NUM = 256,
 };
 
 const char *virt2_config_keys[] = {
@@ -252,13 +253,153 @@ virt2_release_domains (virt2_instance_t *inst)
 }
 
 static int
+virt2_submit (const char *hostname, const char *instname,
+              const char *type, const char *type_instance,
+              value_t *values, size_t values_len)
+{
+    value_list_t vl = VALUE_LIST_INIT;
+    sstrncpy (vl.plugin, PLUGIN_NAME, sizeof (vl.plugin));
+    sstrncpy (vl.plugin_instance, instname, sizeof (vl.plugin_instance));
+    sstrncpy (vl.host, hostname, sizeof(vl.host));
+
+    sstrncpy (vl.type, type, sizeof (vl.type));
+    sstrncpy (vl.type_instance, type_instance, sizeof (vl.type_instance));
+
+    vl.values = values;
+    vl.values_len = values_len;
+
+    plugin_dispatch_values (&vl);
+    return 0;
+}
+
+// TODO: sync with types.db
+
+static int
+virt2_dispatch_cpu (virt2_instance_t *inst, const VMInfo *vm)
+{
+  value_t val;
+
+  val.derive = vm->info.cpuTime;
+  virt2_submit ("", vm->uuid, "virt_cpu_total", "", &val, 1);
+  // TODO: cpu.user, cpu.sys, cpu.total
+
+  for (size_t j = 0; j < vm->vcpu.nstats; j++)
+  {
+    char type_instance[DATA_MAX_NAME_LEN];
+    ssnprintf (type_instance, sizeof (type_instance), "%zu", j);
+    const VCpuStats *stats = (vm->vcpu.xstats) ?vm->vcpu.xstats :vm->vcpu.stats;
+    val.derive = stats[j].time;
+    virt2_submit ("", vm->uuid, "virt_vcpu", type_instance, &val, 1);
+  }
+
+  return 0;
+}
+
+static int
+virt2_dispatch_memory (virt2_instance_t *inst, const VMInfo *vm)
+{
+  value_t val;
+  val.gauge = vm->info.memory * 1024;
+  virt2_submit ("", vm->uuid, "memory", "total", &val, 1);
+  for (int j = 0; j < vm->memstats_count; j++)
+  {
+    static const char *tags[] = {
+     "swap_in", "swap_out", "major_fault", "minor_fault",
+     "unused", "available", "actual_balloon", "rss"
+    };
+    if ((vm->memstats[j].tag) || (vm->memstats[j].tag >= STATIC_ARRAY_SIZE (tags)))
+    {
+      // TODO: ERROR
+      continue;
+    }
+    val.gauge = vm->memstats[j].val * 1024;
+    virt2_submit ("", vm->uuid, "memory", tags[vm->memstats[j].tag], &val, 1);
+  }
+
+  return 0;
+}
+
+static int
+virt2_dispatch_balloon (virt2_instance_t *inst, const VMInfo *vm)
+{
+  value_t val;
+
+  val.absolute = vm->balloon.current;
+  virt2_submit ("", vm->uuid, "balloon", "current", &val, 1);
+
+  val.absolute = vm->balloon.maximum;
+  virt2_submit ("", vm->uuid, "balloon", "maximum", &val, 1);
+
+  return 0;
+}
+ 
+static int
+virt2_dispatch_block (virt2_instance_t *inst, const VMInfo *vm)
+{
+  value_t vals[2]; // TODO: magic number
+
+  // TODO: display name
+  for (size_t j = 0; j < vm->block.nstats; j++)
+  {
+    const BlockStats *stats = (vm->block.xstats) ?vm->block.xstats :vm->block.stats;
+    const char *name = stats[j].xname ?stats[j].xname :stats[j].name;
+      
+    vals[0].derive = stats[j].rd_reqs;
+    vals[1].derive = stats[j].wr_reqs;
+    virt2_submit ("", vm->uuid, "disk_ops", name, vals, STATIC_ARRAY_SIZE (vals));
+
+    vals[0].derive = stats[j].rd_bytes;
+    vals[1].derive = stats[j].wr_bytes;
+    virt2_submit ("", vm->uuid, "disk_octets", name, vals, STATIC_ARRAY_SIZE (vals));
+  }
+  return 0;
+}
+  
+static int
+virt2_dispatch_iface (virt2_instance_t *inst, const VMInfo *vm)
+{
+  value_t vals[2]; // TODO: magic number
+
+  // TODO: display name
+  for (size_t j = 0; j < vm->iface.nstats; j++)
+  {
+    const IFaceStats *stats = (vm->iface.xstats) ?vm->iface.xstats :vm->iface.stats;
+    const char *name = stats[j].xname ?stats[j].xname :stats[j].name;
+    
+    vals[0].derive = stats[j].rx_bytes;
+    vals[1].derive = stats[j].tx_bytes;
+    virt2_submit ("", vm->uuid, "if_octects", name, vals, STATIC_ARRAY_SIZE (vals));
+
+    vals[0].derive = stats[j].rx_pkts;
+    vals[1].derive = stats[j].tx_pkts;
+    virt2_submit ("", vm->uuid, "if_packets", name, vals, STATIC_ARRAY_SIZE (vals));
+
+    vals[0].derive = stats[j].rx_errs;
+    vals[1].derive = stats[j].tx_errs;
+    virt2_submit ("", vm->uuid, "if_errors", name, vals, STATIC_ARRAY_SIZE (vals));
+
+    vals[0].derive = stats[j].rx_drop;
+    vals[1].derive = stats[j].tx_drop;
+    virt2_submit ("", vm->uuid, "if_dropped", name, vals, STATIC_ARRAY_SIZE (vals));
+  }
+
+  return 0;
+}
+      
+static int
 virt2_dispatch_samples (virt2_instance_t *inst, virDomainStatsRecordPtr *records, int records_num)
 {
   for (int i = 0; i < records_num; i++) {
     VMInfo vm;
     vminfo_init(&vm);
-    vminfo_parse(&vm, records[i]);
-    // TODO: use the VMInfo data
+    vminfo_parse(&vm, records[i], TRUE);
+
+    virt2_dispatch_cpu (inst, &vm);
+    virt2_dispatch_memory (inst, &vm);
+    virt2_dispatch_balloon (inst, &vm);
+    virt2_dispatch_block (inst, &vm);
+    virt2_dispatch_iface (inst, &vm);
+
     vminfo_free(&vm);
   }
   return 0;
