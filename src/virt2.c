@@ -683,9 +683,7 @@ virt2_init_instance (virt2_context_t *ctx, size_t i,
   ud->data = inst;
   ud->free_func = NULL; // TODO
 
-  if (ctx->conf.debug_partitioning)
-    // TODO: what if register fails?
-    g_hash_table_add (ctx->state.known_tags, inst->tag);
+  g_hash_table_add (ctx->state.known_tags, inst->tag);
   return plugin_register_complex_read (NULL, inst->tag, func_body,
                                        ctx->conf.interval, ud);
 }
@@ -738,7 +736,7 @@ virt2_domain_get_tag(virt2_domain_t *vdom, const char *xml)
     goto done;
   }
 
-  /* 
+  /*
    * from now on there is no real error, it's ok if a domain
    * doesn't have the metadata partition tag.
    */
@@ -1083,8 +1081,7 @@ done:
 static int
 virt2_setup (virt2_context_t *ctx)
 {
-  if (ctx->conf.debug_partitioning)
-    ctx->state.known_tags = g_hash_table_new (g_str_hash, g_str_equal);
+  ctx->state.known_tags = g_hash_table_new (g_str_hash, g_str_equal);
 
   for (size_t i = 0; i < ctx->state.instances; i++)
     // TODO: what if this fails?
@@ -1096,8 +1093,7 @@ virt2_setup (virt2_context_t *ctx)
 static int
 virt2_teardown (virt2_context_t *ctx)
 {
-  if (ctx->conf.debug_partitioning)
-    g_hash_table_destroy (ctx->state.known_tags);
+  g_hash_table_destroy (ctx->state.known_tags);
   return 0;
 }
 

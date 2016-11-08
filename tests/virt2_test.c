@@ -113,10 +113,137 @@ DEF_TEST(virt2_domain_get_tag_valid_xml)
 
   return 0;
 }
-#undef TAG
 
-DEF_TEST(virt_include_domain)
+DEF_TEST(virt_default_instance_include_domain_without_tag)
 {
+  int ret;
+  virt2_context_t ctx;
+  memset (&ctx, 0, sizeof (ctx));
+  ctx.conf.debug_partitioning = 1;
+  ctx.state.instances = 4; // random "low" number
+
+  ret = virt2_setup (&ctx);
+  EXPECT_EQ_INT (0, ret);
+
+  virt2_domain_t vdom;
+  memset (&vdom, 0, sizeof (vdom));
+  sstrncpy (vdom.uuid, "testing", sizeof (vdom.uuid));
+
+  virt2_instance_t *inst = &(ctx.user_data[0].inst);
+  EXPECT_EQ_STR ("virt-0", inst->tag);
+  ret = virt2_instance_include_domain (&vdom, inst);
+  EXPECT_EQ_INT (1, ret);
+
+  inst = &(ctx.user_data[1].inst);
+  EXPECT_EQ_STR ("virt-1", inst->tag);
+  ret = virt2_instance_include_domain (&vdom, inst);
+  EXPECT_EQ_INT (0, ret);
+
+  ret = virt2_teardown (&ctx);
+  EXPECT_EQ_INT (0, ret);
+  return 0;
+}
+
+DEF_TEST(virt_regular_instance_skip_domain_without_tag)
+{
+  int ret;
+  virt2_context_t ctx;
+  memset (&ctx, 0, sizeof (ctx));
+  ctx.conf.debug_partitioning = 1;
+  ctx.state.instances = 4; // random "low" number > 1
+
+  ret = virt2_setup (&ctx);
+  EXPECT_EQ_INT (0, ret);
+
+  virt2_domain_t vdom;
+  memset (&vdom, 0, sizeof (vdom));
+  sstrncpy (vdom.uuid, "testing", sizeof (vdom.uuid));
+
+  virt2_instance_t *inst = &(ctx.user_data[1].inst);
+  EXPECT_EQ_STR ("virt-1", inst->tag);
+  ret = virt2_instance_include_domain (&vdom, inst);
+  EXPECT_EQ_INT (0, ret);
+
+  ret = virt2_teardown (&ctx);
+  EXPECT_EQ_INT (0, ret);
+  return 0;
+}
+
+DEF_TEST(virt_default_instance_include_domain_with_unknown_tag)
+{
+  int ret;
+  virt2_context_t ctx;
+  memset (&ctx, 0, sizeof (ctx));
+  ctx.conf.debug_partitioning = 1;
+  ctx.state.instances = 4; // random "low" number
+
+  ret = virt2_setup (&ctx);
+  EXPECT_EQ_INT (0, ret);
+
+  virt2_domain_t vdom;
+  memset (&vdom, 0, sizeof (vdom));
+  sstrncpy (vdom.uuid, "testing", sizeof (vdom.uuid));
+  sstrncpy (vdom.tag, "UnknownFormatTag", sizeof (vdom.tag));
+
+  virt2_instance_t *inst = &(ctx.user_data[0].inst);
+  EXPECT_EQ_STR ("virt-0", inst->tag);
+  ret = virt2_instance_include_domain (&vdom, inst);
+  EXPECT_EQ_INT (1, ret);
+
+  ret = virt2_teardown (&ctx);
+  EXPECT_EQ_INT (0, ret);
+  return 0;
+}
+
+DEF_TEST(virt_regular_instance_skip_domain_with_unknown_tag)
+{
+  int ret;
+  virt2_context_t ctx;
+  memset (&ctx, 0, sizeof (ctx));
+  ctx.conf.debug_partitioning = 1;
+  ctx.state.instances = 4; // random "low" number > 1
+
+  ret = virt2_setup (&ctx);
+  EXPECT_EQ_INT (0, ret);
+
+  virt2_domain_t vdom;
+  memset (&vdom, 0, sizeof (vdom));
+  sstrncpy (vdom.uuid, "testing", sizeof (vdom.uuid));
+  sstrncpy (vdom.tag, "UnknownFormatTag", sizeof (vdom.tag));
+
+  virt2_instance_t *inst = &(ctx.user_data[1].inst);
+  EXPECT_EQ_STR ("virt-1", inst->tag);
+  ret = virt2_instance_include_domain (&vdom, inst);
+  EXPECT_EQ_INT (0, ret);
+
+  ret = virt2_teardown (&ctx);
+  EXPECT_EQ_INT (0, ret);
+  return 0;
+}
+
+DEF_TEST(virt_include_domain_matching_tags)
+{
+  int ret;
+  virt2_context_t ctx;
+  memset (&ctx, 0, sizeof (ctx));
+  ctx.conf.debug_partitioning = 1;
+  ctx.state.instances = 4; // random "low" number
+
+  ret = virt2_setup (&ctx);
+  EXPECT_EQ_INT (0, ret);
+
+  virt2_domain_t vdom;
+  memset (&vdom, 0, sizeof (vdom));
+  sstrncpy (vdom.uuid, "testing", sizeof (vdom.uuid));
+  sstrncpy (vdom.tag, "virt-0", sizeof (vdom.tag));
+
+  virt2_instance_t *inst = &(ctx.user_data[0].inst);
+  EXPECT_EQ_STR ("virt-0", inst->tag);
+
+  ret = virt2_instance_include_domain (&vdom, inst);
+  EXPECT_EQ_INT (1, ret);
+  ret = virt2_teardown (&ctx);
+  EXPECT_EQ_INT (0, ret);
   return 0;
 }
 
@@ -124,6 +251,7 @@ DEF_TEST(virt2_partition_domains)
 {
   return 0;
 }
+#undef TAG
 
 int main (void)
 {
@@ -131,6 +259,12 @@ int main (void)
   RUN_TEST(virt2_domain_get_tag_empty_xml);
   RUN_TEST(virt2_domain_get_tag_no_metadata_xml);
   RUN_TEST(virt2_domain_get_tag_valid_xml);
+
+  RUN_TEST(virt_include_domain_matching_tags);
+  RUN_TEST(virt_default_instance_include_domain_without_tag);
+  RUN_TEST(virt_regular_instance_skip_domain_without_tag);
+  RUN_TEST(virt_default_instance_include_domain_with_unknown_tag);
+  RUN_TEST(virt_regular_instance_skip_domain_with_unknown_tag);
 
   END_TEST;
 }
