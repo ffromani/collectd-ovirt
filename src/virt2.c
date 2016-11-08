@@ -1,5 +1,5 @@
 /**
- * collectd-ovirt/virt2.c
+ * collectd-ovirt/virt2_test.c
  * Copyright (C) 2016 Francesco Romani <fromani at redhat.com>
  * Based on
  * collectd - src/virt.c
@@ -36,6 +36,7 @@
 #include <libxml/parser.h>
 #include <libxml/tree.h>
 #include <libxml/xpath.h>
+#include <libxml/xpathInternals.h>
 
 #include "collectd.h"
 
@@ -54,9 +55,10 @@
 
 #define METADATA_VM_PARTITION_URI "http://ovirt.org/vm/partition/1.0"
 #define METADATA_VM_PARTITION_ELEMENT "partition"
-#define METADATA_VM_PARTITION_PREFIX "ovirt"
+#define METADATA_VM_PARTITION_PREFIX "ovirtpart"
 
 enum {
+  BUFFER_MAX_LEN = 256,
   PARTITION_TAG_MAX_LEN = 32,
   INSTANCES_MAX = 128,
   VM_VALUES_NUM = 256,
@@ -412,7 +414,7 @@ pcpuinfo_parse(PCpuInfo *pcpu,
     if (strequals(item->field, "cpu.system")) {
         pcpu->system = item->value.ul;
         return 0;
-    }        
+    }
     return 0;
 }
 
@@ -427,7 +429,7 @@ ballooninfo_parse(BalloonInfo *balloon,
     }
     if (strequals(item->field, "balloon.maximum")) {
         balloon->maximum = item->value.ul;
-    } 
+    }
     return 0;
 }
 
@@ -691,37 +693,67 @@ virt2_init_instance (virt2_context_t *ctx, size_t i,
 static int
 virt2_domain_get_tag(virt2_domain_t *vdom, const char *xml)
 {
+  char xpath_str[BUFFER_MAX_LEN] = { '\0' };
+  xmlDocPtr xml_doc = NULL;
+  xmlXPathContextPtr xpath_ctx = NULL;
+  xmlXPathObjectPtr xpath_obj = NULL;
+  xmlNodePtr xml_node = NULL;
   int err = -1;
 
-  xmlDocPtr xml_doc = xmlReadDoc (xml, NULL, NULL, XML_PARSE_NONET);
+  if (xml == NULL)
+  {
+    ERROR (PLUGIN_NAME " plugin: xmlReadDoc() NULL XML on domain %s", vdom->uuid);
+    goto done;
+  }
+
+  xml_doc = xmlReadDoc (xml, NULL, NULL, XML_PARSE_NONET|XML_PARSE_NSCLEAN);
   if (xml_doc == NULL)
   {
     ERROR (PLUGIN_NAME " plugin: xmlReadDoc() failed on domain %s", vdom->uuid);
     goto done;
   }
 
-  xmlXPathContextPtr xpath_ctx = xmlXPathNewContext (xml_doc);
+  xpath_ctx = xmlXPathNewContext (xml_doc);
+  err = xmlXPathRegisterNs (xpath_ctx, METADATA_VM_PARTITION_PREFIX, METADATA_VM_PARTITION_URI);
+  if (err)
+  {
+    ERROR (PLUGIN_NAME " plugin: xmlXpathRegisterNs(%s, %s) failed on domain %s",
+           METADATA_VM_PARTITION_PREFIX, METADATA_VM_PARTITION_URI, vdom->uuid);
+    goto done;
+  }
 
-  char xpath_str[PARTITION_TAG_MAX_LEN] = { '\0' };
-  ssnprintf (xpath_str, sizeof (xpath_str), "/domain/metadata/%s:%s",
-             METADATA_VM_PARTITION_PREFIX, METADATA_VM_PARTITION_ELEMENT);
-  
-  xmlXPathObjectPtr xpath_obj = xmlXPathEval (xpath_str, xpath_ctx);
+  ssnprintf (xpath_str, sizeof (xpath_str), "/domain/metadata/%s/text()",
+             METADATA_VM_PARTITION_ELEMENT);
+  xpath_obj = xmlXPathEvalExpression (xpath_str, xpath_ctx);
   if (xpath_obj == NULL)
   {
     ERROR (PLUGIN_NAME " plugin: xmlXPathEval(%s) failed on domain %s", xpath_str, vdom->uuid);
     goto done;
   }
 
-  if (xpath_obj->type != XPATH_STRING)
+  if (xpath_obj->type != XPATH_NODESET)
   {
-    ERROR (PLUGIN_NAME " plugin: xmlXPathEval() unexpected return type %d (wanted %d) on domain",
-           xpath_obj->type, XPATH_STRING, vdom->uuid);
+    ERROR (PLUGIN_NAME " plugin: xmlXPathEval(%s) unexpected return type %d (wanted %d) on domain %s",
+           xpath_str, xpath_obj->type, XPATH_NODESET, vdom->uuid);
     goto done;
   }
 
-  sstrncpy (vdom->tag, xpath_obj->stringval, sizeof (vdom->tag));
+  /* 
+   * from now on there is no real error, it's ok if a domain
+   * doesn't have the metadata partition tag.
+   */
   err = 0;
+
+  if (xpath_obj->nodesetval == NULL || xpath_obj->nodesetval->nodeNr != 1)
+  {
+    DEBUG (PLUGIN_NAME " plugin: xmlXPathEval(%s) return nodeset size=%i expected=1 on domain %s",
+           xpath_str,
+           (xpath_obj->nodesetval == NULL) ?0 :xpath_obj->nodesetval->nodeNr,
+           vdom->uuid);
+  } else {
+    xml_node = xpath_obj->nodesetval->nodeTab[0];
+    sstrncpy (vdom->tag, xml_node->content, sizeof (vdom->tag));
+  }
 
 done:
   if (xpath_obj)
@@ -838,7 +870,7 @@ virt2_dispatch_balloon (virt2_instance_t *inst, const VMInfo *vm)
 
   return 0;
 }
- 
+
 static int
 virt2_dispatch_block (virt2_instance_t *inst, const VMInfo *vm)
 {
@@ -849,7 +881,7 @@ virt2_dispatch_block (virt2_instance_t *inst, const VMInfo *vm)
   {
     const BlockStats *stats = (vm->block.xstats) ?vm->block.xstats :vm->block.stats;
     const char *name = stats[j].xname ?stats[j].xname :stats[j].name;
-      
+
     vals[0].derive = stats[j].rd_reqs;
     vals[1].derive = stats[j].wr_reqs;
     virt2_submit ("", vm->uuid, "disk_ops", name, vals, STATIC_ARRAY_SIZE (vals));
@@ -860,7 +892,7 @@ virt2_dispatch_block (virt2_instance_t *inst, const VMInfo *vm)
   }
   return 0;
 }
-  
+
 static int
 virt2_dispatch_iface (virt2_instance_t *inst, const VMInfo *vm)
 {
@@ -871,7 +903,7 @@ virt2_dispatch_iface (virt2_instance_t *inst, const VMInfo *vm)
   {
     const IFaceStats *stats = (vm->iface.xstats) ?vm->iface.xstats :vm->iface.stats;
     const char *name = stats[j].xname ?stats[j].xname :stats[j].name;
-    
+
     vals[0].derive = stats[j].rx_bytes;
     vals[1].derive = stats[j].tx_bytes;
     virt2_submit ("", vm->uuid, "if_octects", name, vals, STATIC_ARRAY_SIZE (vals));
@@ -891,7 +923,7 @@ virt2_dispatch_iface (virt2_instance_t *inst, const VMInfo *vm)
 
   return 0;
 }
-      
+
 static int
 virt2_dispatch_samples (virt2_instance_t *inst, virDomainStatsRecordPtr *records, int records_num)
 {
@@ -919,7 +951,7 @@ virt2_sample_domains (virt2_instance_t *inst, GArray *doms)
                                    inst->conf->stats, &records, inst->conf->flags);
   if (ret == -1)
     return ret;
-  
+
   int records_num = ret;
   ret = virt2_dispatch_samples (inst, records, records_num);
   virDomainStatsRecordListFree (records);
@@ -973,12 +1005,10 @@ virt2_domain_is_ready(virt2_domain_t *vdom, virt2_instance_t *inst)
 static int
 virt2_instance_include_domain (virt2_domain_t *vdom, virt2_instance_t *inst)
 {
-  if (!virt2_domain_is_ready (vdom, inst))
-    return 0;
   /* instance#0 will always be there, so it is in charge of extra duties */
   if (inst->id == 0)
   {
-    if (vdom->tag[0] == '\0' || 
+    if (vdom->tag[0] == '\0' ||
         !g_hash_table_contains (inst->state->known_tags, vdom->tag))
     {
       if (inst->conf->debug_partitioning)
@@ -992,7 +1022,8 @@ virt2_instance_include_domain (virt2_domain_t *vdom, virt2_instance_t *inst)
 }
 
 static GArray *
-virt2_partition_domains (virt2_instance_t *inst)
+virt2_partition_domains (virt2_instance_t *inst,
+                         int (*domain_partitionable) (virt2_domain_t *vdom, virt2_instance_t *inst))
 {
   GArray *doms = g_array_sized_new (TRUE, FALSE, sizeof(virDomainPtr), inst->domains_num);
 
@@ -1002,7 +1033,8 @@ virt2_partition_domains (virt2_instance_t *inst)
     int err = virt2_domain_init (&vdom, inst->domains_all[i]);
     if (err)
       continue;
-
+    if (!domain_partitionable (&vdom, inst))
+      continue;
     if (!virt2_instance_include_domain (&vdom, inst))
       continue;
 
@@ -1032,7 +1064,7 @@ virt2_read_domains (user_data_t *ud)
         goto done;
     }
 
-    GArray *doms = virt2_partition_domains (inst);
+    GArray *doms = virt2_partition_domains (inst, virt2_domain_is_ready);
     if (!doms)
     {
         // TODO ERROR
@@ -1179,4 +1211,6 @@ module_register (void)
   plugin_register_init (PLUGIN_NAME, virt2_init);
   plugin_register_shutdown (PLUGIN_NAME, virt2_shutdown);
 }
+
+/* vim: set sw=2 sts=2 et : */
 

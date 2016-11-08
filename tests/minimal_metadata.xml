@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<domain type="kvm" xmlns:ovirt="http://ovirt.org/vm/tune/1.0">
+  <metadata>
+    <partition xmlns:ovirtpart="http://ovirt.org/ovirt/partition/1.0">virt-0</partition>
+  </metadata>
+</domain>

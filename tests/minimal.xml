@@ -1,0 +1,4 @@
+<?xml version="1.0" encoding="utf-8"?>
+<domain type="kvm" xmlns:ovirt="http://ovirt.org/vm/tune/1.0">
+  <metadata/>
+</domain>
