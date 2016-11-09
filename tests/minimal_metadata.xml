@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <domain type="kvm" xmlns:ovirt="http://ovirt.org/vm/tune/1.0">
   <metadata>
-    <partition xmlns:ovirtpart="http://ovirt.org/ovirt/partition/1.0">virt-0</partition>
+    <ovirtmap:tag xmlns:ovirtmap="http://ovirt.org/ovirtmap/tag/1.0">virt-0</ovirtmap:tag>
   </metadata>
 </domain>

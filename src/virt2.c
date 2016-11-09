@@ -53,9 +53,9 @@
  * </Plugin>
  */
 
-#define METADATA_VM_PARTITION_URI "http://ovirt.org/vm/partition/1.0"
-#define METADATA_VM_PARTITION_ELEMENT "partition"
-#define METADATA_VM_PARTITION_PREFIX "ovirtpart"
+#define METADATA_VM_PARTITION_URI "http://ovirt.org/ovirtmap/tag/1.0"
+#define METADATA_VM_PARTITION_ELEMENT "tag"
+#define METADATA_VM_PARTITION_PREFIX "ovirtmap"
 
 enum {
   BUFFER_MAX_LEN = 256,
@@ -657,138 +657,6 @@ virt2_get_default_context ()
 /* *** */
 
 static int
-virt2_get_optimal_instance_count (virt2_context_t *ctx)
-{
-  /*
-   * TODO: if ctx->conf.instances == -1, query libvirt using
-   * the ADMIN API for the worker thread pool size, and return
-   * that value.
-   */
-  return ctx->conf.instances;
-}
-
-static int
-virt2_init_instance (virt2_context_t *ctx, size_t i,
-                     int (*func_body) (user_data_t *ud))
-{
-  virt2_user_data_t *user_data = &(ctx->user_data[i]);
-
-  virt2_instance_t *inst = &user_data->inst;
-  ssnprintf (inst->tag, sizeof (inst->tag), "virt-%zu", i);
-  inst->state = &ctx->state;
-  inst->conf = &ctx->conf;
-  inst->id = i;
-
-  user_data_t *ud = &user_data->ud;
-  ud->data = inst;
-  ud->free_func = NULL; // TODO
-
-  g_hash_table_add (ctx->state.known_tags, inst->tag);
-  return plugin_register_complex_read (NULL, inst->tag, func_body,
-                                       ctx->conf.interval, ud);
-}
-
-static int
-virt2_domain_get_tag(virt2_domain_t *vdom, const char *xml)
-{
-  char xpath_str[BUFFER_MAX_LEN] = { '\0' };
-  xmlDocPtr xml_doc = NULL;
-  xmlXPathContextPtr xpath_ctx = NULL;
-  xmlXPathObjectPtr xpath_obj = NULL;
-  xmlNodePtr xml_node = NULL;
-  int err = -1;
-
-  if (xml == NULL)
-  {
-    ERROR (PLUGIN_NAME " plugin: xmlReadDoc() NULL XML on domain %s", vdom->uuid);
-    goto done;
-  }
-
-  xml_doc = xmlReadDoc (xml, NULL, NULL, XML_PARSE_NONET|XML_PARSE_NSCLEAN);
-  if (xml_doc == NULL)
-  {
-    ERROR (PLUGIN_NAME " plugin: xmlReadDoc() failed on domain %s", vdom->uuid);
-    goto done;
-  }
-
-  xpath_ctx = xmlXPathNewContext (xml_doc);
-  err = xmlXPathRegisterNs (xpath_ctx, METADATA_VM_PARTITION_PREFIX, METADATA_VM_PARTITION_URI);
-  if (err)
-  {
-    ERROR (PLUGIN_NAME " plugin: xmlXpathRegisterNs(%s, %s) failed on domain %s",
-           METADATA_VM_PARTITION_PREFIX, METADATA_VM_PARTITION_URI, vdom->uuid);
-    goto done;
-  }
-
-  ssnprintf (xpath_str, sizeof (xpath_str), "/domain/metadata/%s/text()",
-             METADATA_VM_PARTITION_ELEMENT);
-  xpath_obj = xmlXPathEvalExpression (xpath_str, xpath_ctx);
-  if (xpath_obj == NULL)
-  {
-    ERROR (PLUGIN_NAME " plugin: xmlXPathEval(%s) failed on domain %s", xpath_str, vdom->uuid);
-    goto done;
-  }
-
-  if (xpath_obj->type != XPATH_NODESET)
-  {
-    ERROR (PLUGIN_NAME " plugin: xmlXPathEval(%s) unexpected return type %d (wanted %d) on domain %s",
-           xpath_str, xpath_obj->type, XPATH_NODESET, vdom->uuid);
-    goto done;
-  }
-
-  /*
-   * from now on there is no real error, it's ok if a domain
-   * doesn't have the metadata partition tag.
-   */
-  err = 0;
-
-  if (xpath_obj->nodesetval == NULL || xpath_obj->nodesetval->nodeNr != 1)
-  {
-    DEBUG (PLUGIN_NAME " plugin: xmlXPathEval(%s) return nodeset size=%i expected=1 on domain %s",
-           xpath_str,
-           (xpath_obj->nodesetval == NULL) ?0 :xpath_obj->nodesetval->nodeNr,
-           vdom->uuid);
-  } else {
-    xml_node = xpath_obj->nodesetval->nodeTab[0];
-    sstrncpy (vdom->tag, xml_node->content, sizeof (vdom->tag));
-  }
-
-done:
-  if (xpath_obj)
-    xmlXPathFreeObject (xpath_obj);
-  if (xpath_ctx)
-    xmlXPathFreeContext (xpath_ctx);
-  if (xml_doc)
-    xmlFreeDoc (xml_doc);
-
-  return err;
-}
-
-static int
-virt2_acquire_domains (virt2_instance_t *inst)
-{
-  unsigned int flags = VIR_CONNECT_LIST_DOMAINS_RUNNING;
-  int ret = virConnectListAllDomains (inst->state->conn, &inst->domains_all, flags);
-  if (ret < 0)
-  {
-    ERROR (PLUGIN_NAME " plugin#%zu: virConnectListAllDomains failed: %s",
-           inst->id, virGetLastErrorMessage());
-    return -1;
-  }
-  inst->domains_num = (size_t)ret;
-  return 0;
-}
-
-static void
-virt2_release_domains (virt2_instance_t *inst)
-{
-  for (size_t i = 0; i < inst->domains_num; i++)
-    virDomainFree (inst->domains_all[i]);
-  sfree (inst->domains_all);
-  inst->domains_num = 0;
-}
-
-static int
 virt2_submit (const char *hostname, const char *instname,
               const char *type, const char *type_instance,
               value_t *values, size_t values_len)
@@ -922,6 +790,140 @@ virt2_dispatch_iface (virt2_instance_t *inst, const VMInfo *vm)
   return 0;
 }
 
+/* *** */
+
+static int
+virt2_get_optimal_instance_count (virt2_context_t *ctx)
+{
+  /*
+   * TODO: if ctx->conf.instances == -1, query libvirt using
+   * the ADMIN API for the worker thread pool size, and return
+   * that value.
+   */
+  return ctx->conf.instances;
+}
+
+static int
+virt2_init_instance (virt2_context_t *ctx, size_t i,
+                     int (*func_body) (user_data_t *ud))
+{
+  virt2_user_data_t *user_data = &(ctx->user_data[i]);
+
+  virt2_instance_t *inst = &user_data->inst;
+  ssnprintf (inst->tag, sizeof (inst->tag), "virt-%zu", i);
+  inst->state = &ctx->state;
+  inst->conf = &ctx->conf;
+  inst->id = i;
+
+  user_data_t *ud = &user_data->ud;
+  ud->data = inst;
+  ud->free_func = NULL; // TODO
+
+  g_hash_table_add (ctx->state.known_tags, inst->tag);
+  return plugin_register_complex_read (NULL, inst->tag, func_body,
+                                       ctx->conf.interval, ud);
+}
+
+static int
+virt2_domain_get_tag(virt2_domain_t *vdom, const char *xml)
+{
+  char xpath_str[BUFFER_MAX_LEN] = { '\0' };
+  xmlDocPtr xml_doc = NULL;
+  xmlXPathContextPtr xpath_ctx = NULL;
+  xmlXPathObjectPtr xpath_obj = NULL;
+  xmlNodePtr xml_node = NULL;
+  int err = -1;
+
+  if (xml == NULL)
+  {
+    ERROR (PLUGIN_NAME " plugin: xmlReadDoc() NULL XML on domain %s", vdom->uuid);
+    goto done;
+  }
+
+  xml_doc = xmlReadDoc (xml, NULL, NULL, XML_PARSE_NONET|XML_PARSE_NSCLEAN);
+  if (xml_doc == NULL)
+  {
+    ERROR (PLUGIN_NAME " plugin: xmlReadDoc() failed on domain %s", vdom->uuid);
+    goto done;
+  }
+
+  xpath_ctx = xmlXPathNewContext (xml_doc);
+  err = xmlXPathRegisterNs (xpath_ctx, METADATA_VM_PARTITION_PREFIX, METADATA_VM_PARTITION_URI);
+  if (err)
+  {
+    ERROR (PLUGIN_NAME " plugin: xmlXpathRegisterNs(%s, %s) failed on domain %s",
+           METADATA_VM_PARTITION_PREFIX, METADATA_VM_PARTITION_URI, vdom->uuid);
+    goto done;
+  }
+
+  ssnprintf (xpath_str, sizeof (xpath_str), "/domain/metadata/%s:%s/text()",
+             METADATA_VM_PARTITION_PREFIX, METADATA_VM_PARTITION_ELEMENT);
+  xpath_obj = xmlXPathEvalExpression (xpath_str, xpath_ctx);
+  if (xpath_obj == NULL)
+  {
+    ERROR (PLUGIN_NAME " plugin: xmlXPathEval(%s) failed on domain %s", xpath_str, vdom->uuid);
+    goto done;
+  }
+
+  if (xpath_obj->type != XPATH_NODESET)
+  {
+    ERROR (PLUGIN_NAME " plugin: xmlXPathEval(%s) unexpected return type %d (wanted %d) on domain %s",
+           xpath_str, xpath_obj->type, XPATH_NODESET, vdom->uuid);
+    goto done;
+  }
+
+  /*
+   * from now on there is no real error, it's ok if a domain
+   * doesn't have the metadata partition tag.
+   */
+  err = 0;
+
+  if (xpath_obj->nodesetval == NULL || xpath_obj->nodesetval->nodeNr != 1)
+  {
+    DEBUG (PLUGIN_NAME " plugin: xmlXPathEval(%s) return nodeset size=%i expected=1 on domain %s",
+           xpath_str,
+           (xpath_obj->nodesetval == NULL) ?0 :xpath_obj->nodesetval->nodeNr,
+           vdom->uuid);
+  } else {
+    xml_node = xpath_obj->nodesetval->nodeTab[0];
+    sstrncpy (vdom->tag, xml_node->content, sizeof (vdom->tag));
+  }
+
+done:
+  if (xpath_obj)
+    xmlXPathFreeObject (xpath_obj);
+  if (xpath_ctx)
+    xmlXPathFreeContext (xpath_ctx);
+  if (xml_doc)
+    xmlFreeDoc (xml_doc);
+
+  return err;
+}
+
+static int
+virt2_acquire_domains (virt2_instance_t *inst)
+{
+  unsigned int flags = VIR_CONNECT_LIST_DOMAINS_RUNNING;
+  int ret = virConnectListAllDomains (inst->state->conn, &inst->domains_all, flags);
+  if (ret < 0)
+  {
+    ERROR (PLUGIN_NAME " plugin#%zu: virConnectListAllDomains failed: %s",
+           inst->id, virGetLastErrorMessage());
+    return -1;
+  }
+  inst->domains_num = (size_t)ret;
+  return 0;
+}
+
+static void
+virt2_release_domains (virt2_instance_t *inst)
+{
+  for (size_t i = 0; i < inst->domains_num; i++)
+    virDomainFree (inst->domains_all[i]);
+  sfree (inst->domains_all);
+  inst->domains_num = 0;
+}
+
 static int
 virt2_dispatch_samples (virt2_instance_t *inst, virDomainStatsRecordPtr *records, int records_num)
 {
@@ -979,7 +981,7 @@ virt2_domain_init (virt2_domain_t *vdom, virDomainPtr dom)
 }
 
 int
-virt2_domain_is_ready(virt2_domain_t *vdom, virt2_instance_t *inst)
+virt2_domain_is_ready (virt2_domain_t *vdom, virt2_instance_t *inst)
 {
   virDomainControlInfo info;
   int err = virDomainGetControlInfo (vdom->dom, &info, 0);
