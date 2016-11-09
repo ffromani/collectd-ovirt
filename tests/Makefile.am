@@ -7,6 +7,7 @@ noinst_PROGRAMS = \
 
 test_virt2_SOURCES = \
 	fake_collectd.c \
+	fake_libvirt.c \
 	virt2_test.c \
 	$(NULL)
 test_virt2_CFLAGS = \
