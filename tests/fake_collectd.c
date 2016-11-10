@@ -7,6 +7,10 @@
 #include "collectd.h"
 
 
+// TODO
+char hostname_g[32] = { 'T', 'E', 'S', 'T', '\0' };
+
+
 char *sstrncpy (char *dest, const char *src, size_t n)
 {
   return strncpy (dest, src, n);
