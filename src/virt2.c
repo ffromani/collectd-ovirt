@@ -47,7 +47,6 @@
  * Synopsis:
  * <Plugin "virt2">
  *   Connection "qemu:///system"
- *   RefreshInterval 60
  *   Instances 5
  *   DomainCheck true
  * </Plugin>
@@ -58,6 +57,7 @@
 #define METADATA_VM_PARTITION_PREFIX "ovirtmap"
 
 enum {
+  INSTANCES_DEFAULT_NUM = 5,
   BUFFER_MAX_LEN = 256,
   PARTITION_TAG_MAX_LEN = 32,
   INSTANCES_MAX = 128,
@@ -66,7 +66,6 @@ enum {
 
 const char *virt2_config_keys[] = {
   "Connection",
-  "RefreshInterval"
   "Instances",
   "DomainCheck",
   "DebugPartitioning",
@@ -664,7 +663,10 @@ virt2_submit (const char *hostname, const char *instname,
     value_list_t vl = VALUE_LIST_INIT;
     sstrncpy (vl.plugin, PLUGIN_NAME, sizeof (vl.plugin));
     sstrncpy (vl.plugin_instance, instname, sizeof (vl.plugin_instance));
-    sstrncpy (vl.host, hostname, sizeof(vl.host));
+    if (hostname != NULL && hostname[0] != '\0')
+      sstrncpy (vl.host, hostname, sizeof(vl.host));
+    else
+      sstrncpy (vl.host, hostname_g, sizeof(vl.host));
 
     sstrncpy (vl.type, type, sizeof (vl.type));
     sstrncpy (vl.type_instance, type_instance, sizeof (vl.type_instance));
@@ -800,7 +802,13 @@ virt2_get_optimal_instance_count (virt2_context_t *ctx)
    * the ADMIN API for the worker thread pool size, and return
    * that value.
    */
-  return ctx->conf.instances;
+  int num = ctx->conf.instances;
+  if (num == 0) {
+    num = INSTANCES_DEFAULT_NUM;
+  }
+  INFO (PLUGIN_NAME " plugin: using %i instances (configured=%i)",
+        num, ctx->conf.instances);
+  return num;
 }
 
 static int
@@ -907,11 +915,15 @@ virt2_acquire_domains (virt2_instance_t *inst)
   int ret = virConnectListAllDomains (inst->state->conn, &inst->domains_all, flags);
   if (ret < 0)
   {
-    ERROR (PLUGIN_NAME " plugin#%zu: virConnectListAllDomains failed: %s",
-           inst->id, virGetLastErrorMessage());
+    ERROR (PLUGIN_NAME " plugin#%s: virConnectListAllDomains failed: %s",
+           inst->tag, virGetLastErrorMessage());
     return -1;
   }
   inst->domains_num = (size_t)ret;
+  DEBUG (PLUGIN_NAME " plugin#%s: found %i domains", inst->tag, inst->domains_num);
+
+  if (inst->domains_num == 0)
+    return 1;
   return 0;
 }
 
@@ -946,6 +958,9 @@ virt2_dispatch_samples (virt2_instance_t *inst, virDomainStatsRecordPtr *records
 static int
 virt2_sample_domains (virt2_instance_t *inst, GArray *doms)
 {
+  if (doms->len == 0) // nothing to do, and it's OK
+    return 0;
+
   virDomainStatsRecordPtr *records = NULL;
   int ret = virDomainListGetStats (((virDomainPtr *)doms->data),
                                    inst->conf->stats, &records, inst->conf->flags);
@@ -1047,36 +1062,40 @@ virt2_partition_domains (virt2_instance_t *inst,
 int
 virt2_read_domains (user_data_t *ud)
 {
+    int err;
     virt2_instance_t *inst = ud->data;
-
     if (!inst)
     {
         // TODO ERROR
-        goto done;
+        return -1;
     }
-
-    int err = -1;
 
     err = virt2_acquire_domains (inst);
     if (err)
     {
         // TODO ERROR
-        goto done;
+        return -1;
+    }
+
+    if (inst->domains_num == 0)
+    {
+      /* nothing to do here, but it's OK */
+      return 0;
     }
 
     GArray *doms = virt2_partition_domains (inst, virt2_domain_is_ready);
-    if (!doms)
+    if (doms != NULL)
     {
-        // TODO ERROR
-        goto release;
-   }
+      err = virt2_sample_domains (inst, doms);
+      g_array_free (doms, TRUE);
+    }
+    else
+    {
+      // TODO ERROR
+      err = -1;
+    }
 
-    err = virt2_sample_domains (inst, doms);
-
-    g_array_free (doms, TRUE);
-release:
     virt2_release_domains (inst);
-done:
     return err;
 }
 
