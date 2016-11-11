@@ -132,6 +132,8 @@ struct virt2_array_s {
   guint len;
 };
 
+typedef int (*virt2_domain_check_func_t) (virt2_domain_t *vdom, virt2_instance_t *inst);
+
 /* *** */
 
 enum {
@@ -995,7 +997,7 @@ virt2_domain_init (virt2_domain_t *vdom, virDomainPtr dom)
   return err;
 }
 
-int
+static int
 virt2_domain_is_ready (virt2_domain_t *vdom, virt2_instance_t *inst)
 {
   virDomainControlInfo info;
@@ -1016,6 +1018,13 @@ virt2_domain_is_ready (virt2_domain_t *vdom, virt2_instance_t *inst)
 
   return 1;
 }
+
+static int
+virt2_domain_always_ready (virt2_domain_t *vdom, virt2_instance_t *inst)
+{
+  return 1;
+}
+
 
 static int
 virt2_instance_include_domain (virt2_domain_t *vdom, virt2_instance_t *inst)
@@ -1062,41 +1071,44 @@ virt2_partition_domains (virt2_instance_t *inst,
 int
 virt2_read_domains (user_data_t *ud)
 {
-    int err;
-    virt2_instance_t *inst = ud->data;
-    if (!inst)
-    {
-        // TODO ERROR
-        return -1;
-    }
-
-    err = virt2_acquire_domains (inst);
-    if (err)
-    {
-        // TODO ERROR
-        return -1;
-    }
-
-    if (inst->domains_num == 0)
-    {
-      /* nothing to do here, but it's OK */
-      return 0;
-    }
-
-    GArray *doms = virt2_partition_domains (inst, virt2_domain_is_ready);
-    if (doms != NULL)
-    {
-      err = virt2_sample_domains (inst, doms);
-      g_array_free (doms, TRUE);
-    }
-    else
-    {
+  int err;
+  virt2_instance_t *inst = ud->data;
+  if (!inst)
+  {
       // TODO ERROR
-      err = -1;
-    }
+      return -1;
+  }
 
-    virt2_release_domains (inst);
-    return err;
+  err = virt2_acquire_domains (inst);
+  if (err)
+  {
+      // TODO ERROR
+      return -1;
+  }
+
+  if (inst->domains_num == 0)
+  {
+    /* nothing to do here, but it's OK */
+    return 0;
+  }
+
+  virt2_domain_check_func_t checker = (inst->conf->domain_check)
+    ? virt2_domain_is_ready
+    : virt2_domain_always_ready;
+  GArray *doms = virt2_partition_domains (inst, checker);
+  if (doms != NULL)
+  {
+    err = virt2_sample_domains (inst, doms);
+    g_array_free (doms, TRUE);
+  }
+  else
+  {
+    // TODO ERROR
+    err = -1;
+  }
+
+  virt2_release_domains (inst);
+  return err;
 }
 
 static int
