@@ -67,6 +67,8 @@ enum {
 const char *virt2_config_keys[] = {
   "Connection",
 
+  "RefreshInterval",
+
   "HostnameFormat",
   "InterfaceFormat",
 
@@ -1303,7 +1305,7 @@ virt2_config (const char *key, const char *value)
     cfg->instances = val;
     return 0;
   }
-  if (strcasecmp (key, "Interval") == 0)
+  if (strcasecmp (key, "RefreshInterval") == 0)
   {
     char *eptr = NULL;
     double val = strtod (value, &eptr);
@@ -1311,7 +1313,7 @@ virt2_config (const char *key, const char *value)
       return 1;
     if (val <= 0)
     {
-      ERROR (PLUGIN_NAME " plugin: Interval <= 0 makes no sense.");
+      ERROR (PLUGIN_NAME " plugin: RefreshInterval <= 0 makes no sense.");
       return 1;
     }
     cfg->interval = DOUBLE_TO_CDTIME_T(val);
