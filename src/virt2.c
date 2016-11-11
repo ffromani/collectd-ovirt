@@ -66,12 +66,45 @@ enum {
 
 const char *virt2_config_keys[] = {
   "Connection",
+
+  "HostnameFormat",
+  "InterfaceFormat",
+
+  "PluginInstanceFormat",
+
   "Instances",
   "DomainCheck",
   "DebugPartitioning",
   NULL
 };
 #define NR_CONFIG_KEYS ((sizeof virt2_config_keys / sizeof virt2_config_keys[0]) - 1)
+
+/* HostnameFormat. */
+#define HF_MAX_FIELDS 3
+
+enum hf_field {
+    hf_none = 0,
+    hf_hostname,
+    hf_name,
+    hf_uuid
+};
+
+/* PluginInstanceFormat */
+#define PLGINST_MAX_FIELDS 2
+
+enum plginst_field {
+    plginst_none = 0,
+    plginst_name,
+    plginst_uuid
+};
+
+/* InterfaceFormat. */
+enum if_field {
+    if_address,
+    if_name,
+    if_number
+};
+
 
 typedef struct virt2_config_s virt2_config_t;
 struct virt2_config_s {
@@ -80,6 +113,9 @@ struct virt2_config_s {
   cdtime_t interval; /* could be 0, and it's OK */
   int domain_check;
   int debug_partitioning;
+  enum hf_field hostname_format[HF_MAX_FIELDS];
+  enum plginst_field plugin_instance_format[PLGINST_MAX_FIELDS];
+  enum if_field interface_format;
   /* not user-facing */
   int stats;
   int flags;
@@ -124,6 +160,7 @@ struct virt2_domain_s {
   virDomainPtr dom;
   char tag[PARTITION_TAG_MAX_LEN];
   char uuid[VIR_UUID_STRING_BUFLEN + 1];
+  char *name;
 };
 
 typedef struct virt2_array_s virt2_array_t;
@@ -230,6 +267,7 @@ struct StateInfo {
 typedef struct VMInfo VMInfo;
 struct VMInfo {
     char uuid[VIR_UUID_STRING_BUFLEN];
+    const char *name;
     virDomainInfo info;
     virDomainMemoryStatStruct memstats[VIR_DOMAIN_MEMORY_STAT_NR];
     int memstats_count;
@@ -557,6 +595,10 @@ vminfo_parse(VMInfo *vm,
         return -1;
     }
 
+    vm->name = virDomainGetName(record->dom);
+    if (vm->name == NULL) {
+        return -1;
+    }
     if (virDomainGetUUIDString(record->dom, vm->uuid) < 0) {
         return -1;
     }
@@ -640,6 +682,9 @@ vminfo_free(VMInfo *vm)
 
 virt2_context_t default_context = {
   .conf = {
+    .hostname_format = { hf_name },
+    .plugin_instance_format = { plginst_none },
+    .interface_format = if_name,
     /*
      * Using 0 for @stats returns all stats groups supported by the given hypervisor.
      * http://libvirt.org/html/libvirt-libvirt-domain.html#virConnectGetAllDomainStats
@@ -657,27 +702,96 @@ virt2_get_default_context ()
 
 /* *** */
 
+static void
+virt2_value_list_set_plugin_instance (value_list_t *vl,
+                                      const VMInfo *info,
+                                      const virt2_config_t *cfg)
+{
+  int i, n;
+  for (i = 0; i < PLGINST_MAX_FIELDS; ++i) {
+    if (cfg->plugin_instance_format[i] == plginst_none)
+      continue;
+
+    n = sizeof(vl->plugin_instance) - strlen (vl->plugin_instance) - 2;
+
+    if (i > 0 && n >= 1)
+    {
+      strncat (vl->plugin_instance, ":", 1);
+      n--;
+    }
+
+    switch (cfg->plugin_instance_format[i])
+    {
+      case plginst_none:
+        break;
+      case plginst_name:
+        strncat (vl->plugin_instance, info->name, n);
+        break;
+      case plginst_uuid:
+        strncat (vl->plugin_instance, info->uuid, n);
+        break;
+      }
+  }
+
+  vl->plugin_instance[sizeof (vl->plugin_instance) - 1] = '\0';
+}
+
+static void
+virt2_value_list_set_host (value_list_t *vl,
+                           const VMInfo *info,
+                           const virt2_config_t *cfg)
+{
+  int i, n;
+  vl->host[0] = '\0';
+  for (i = 0; i < HF_MAX_FIELDS; i++) {
+    if (cfg->hostname_format[i] == hf_none)
+      continue;
+
+    n = DATA_MAX_NAME_LEN - strlen (vl->host) - 2;
+
+    if (i > 0 && n >= 1)
+    {
+      strncat (vl->host, ":", 1);
+      n--;
+    }
+
+    switch (cfg->hostname_format[i])
+    {
+      case hf_none:
+        break;
+      case hf_hostname:
+        strncat (vl->host, hostname_g, n);
+        break;
+      case hf_name:
+        strncat (vl->host, info->name, n);
+        break;
+      case hf_uuid:
+        strncat (vl->host, info->uuid, n);
+        break;
+    }
+  }
+  vl->host[sizeof (vl->host) - 1] = '\0';
+}
+
 static int
-virt2_submit (const char *hostname, const char *instname,
+virt2_submit (const virt2_config_t *cfg, const VMInfo *info,
               const char *type, const char *type_instance,
               value_t *values, size_t values_len)
 {
-    value_list_t vl = VALUE_LIST_INIT;
-    sstrncpy (vl.plugin, PLUGIN_NAME, sizeof (vl.plugin));
-    sstrncpy (vl.plugin_instance, instname, sizeof (vl.plugin_instance));
-    if (hostname != NULL && hostname[0] != '\0')
-      sstrncpy (vl.host, hostname, sizeof(vl.host));
-    else
-      sstrncpy (vl.host, hostname_g, sizeof(vl.host));
+  int i, n;
+  value_list_t vl = VALUE_LIST_INIT;
 
-    sstrncpy (vl.type, type, sizeof (vl.type));
-    sstrncpy (vl.type_instance, type_instance, sizeof (vl.type_instance));
+  sstrncpy (vl.plugin, PLUGIN_NAME, sizeof (vl.plugin));
+  virt2_value_list_set_plugin_instance (&vl, info, cfg);
+  virt2_value_list_set_host (&vl, info, cfg);
+  sstrncpy (vl.type, type, sizeof (vl.type));
+  sstrncpy (vl.type_instance, type_instance, sizeof (vl.type_instance));
 
-    vl.values = values;
-    vl.values_len = values_len;
+  vl.values = values;
+  vl.values_len = values_len;
 
-    plugin_dispatch_values (&vl);
-    return 0;
+  plugin_dispatch_values (&vl);
+  return 0;
 }
 
 // TODO: sync with types.db
@@ -688,7 +802,7 @@ virt2_dispatch_cpu (virt2_instance_t *inst, const VMInfo *vm)
   value_t val;
 
   val.derive = vm->info.cpuTime;
-  virt2_submit ("", vm->uuid, "virt_cpu_total", "", &val, 1);
+  virt2_submit (inst->conf, vm, "virt_cpu_total", "", &val, 1);
   // TODO: cpu.user, cpu.sys, cpu.total
 
   for (size_t j = 0; j < vm->vcpu.nstats; j++)
@@ -697,7 +811,7 @@ virt2_dispatch_cpu (virt2_instance_t *inst, const VMInfo *vm)
     ssnprintf (type_instance, sizeof (type_instance), "%zu", j);
     const VCpuStats *stats = (vm->vcpu.xstats) ?vm->vcpu.xstats :vm->vcpu.stats;
     val.derive = stats[j].time;
-    virt2_submit ("", vm->uuid, "virt_vcpu", type_instance, &val, 1);
+    virt2_submit (inst->conf, vm, "virt_vcpu", type_instance, &val, 1);
   }
 
   return 0;
@@ -708,7 +822,7 @@ virt2_dispatch_memory (virt2_instance_t *inst, const VMInfo *vm)
 {
   value_t val;
   val.gauge = vm->info.memory * 1024;
-  virt2_submit ("", vm->uuid, "memory", "total", &val, 1);
+  virt2_submit (inst->conf, vm, "memory", "total", &val, 1);
   for (int j = 0; j < vm->memstats_count; j++)
   {
     static const char *tags[] = {
@@ -721,7 +835,7 @@ virt2_dispatch_memory (virt2_instance_t *inst, const VMInfo *vm)
       continue;
     }
     val.gauge = vm->memstats[j].val * 1024;
-    virt2_submit ("", vm->uuid, "memory", tags[vm->memstats[j].tag], &val, 1);
+    virt2_submit (inst->conf, vm, "memory", tags[vm->memstats[j].tag], &val, 1);
   }
 
   return 0;
@@ -733,10 +847,10 @@ virt2_dispatch_balloon (virt2_instance_t *inst, const VMInfo *vm)
   value_t val;
 
   val.absolute = vm->balloon.current;
-  virt2_submit ("", vm->uuid, "balloon", "current", &val, 1);
+  virt2_submit (inst->conf, vm, "balloon", "current", &val, 1);
 
   val.absolute = vm->balloon.maximum;
-  virt2_submit ("", vm->uuid, "balloon", "maximum", &val, 1);
+  virt2_submit (inst->conf, vm, "balloon", "maximum", &val, 1);
 
   return 0;
 }
@@ -754,11 +868,11 @@ virt2_dispatch_block (virt2_instance_t *inst, const VMInfo *vm)
 
     vals[0].derive = stats[j].rd_reqs;
     vals[1].derive = stats[j].wr_reqs;
-    virt2_submit ("", vm->uuid, "disk_ops", name, vals, STATIC_ARRAY_SIZE (vals));
+    virt2_submit (inst->conf, vm, "disk_ops", name, vals, STATIC_ARRAY_SIZE (vals));
 
     vals[0].derive = stats[j].rd_bytes;
     vals[1].derive = stats[j].wr_bytes;
-    virt2_submit ("", vm->uuid, "disk_octets", name, vals, STATIC_ARRAY_SIZE (vals));
+    virt2_submit (inst->conf, vm, "disk_octets", name, vals, STATIC_ARRAY_SIZE (vals));
   }
   return 0;
 }
@@ -767,28 +881,45 @@ static int
 virt2_dispatch_iface (virt2_instance_t *inst, const VMInfo *vm)
 {
   value_t vals[2]; // TODO: magic number
+  size_t j;
 
-  // TODO: display name
-  for (size_t j = 0; j < vm->iface.nstats; j++)
+  for (j = 0; j < vm->iface.nstats; j++)
   {
+    char if_num_buf[32] = { '\0' }; // TODO
     const IFaceStats *stats = (vm->iface.xstats) ?vm->iface.xstats :vm->iface.stats;
-    const char *name = stats[j].xname ?stats[j].xname :stats[j].name;
+    const char *display_name = NULL;
+
+    switch (inst->conf->interface_format)
+    {
+      case if_address:
+        ERROR (PLUGIN_NAME " plugin: not yet supported, fallback to 'name'");
+        display_name = stats[j].xname ?stats[j].xname :stats[j].name;
+        break;
+      case if_number:
+        ssnprintf (if_num_buf, sizeof (if_num_buf), "interface-%zu", j+1);
+        display_name = if_num_buf;
+        break;
+      case if_name: // fallthrough
+      default:
+        display_name = stats[j].xname ?stats[j].xname :stats[j].name;
+        break;
+    }
 
     vals[0].derive = stats[j].rx_bytes;
     vals[1].derive = stats[j].tx_bytes;
-    virt2_submit ("", vm->uuid, "if_octects", name, vals, STATIC_ARRAY_SIZE (vals));
+    virt2_submit (inst->conf, vm, "if_octects", display_name, vals, STATIC_ARRAY_SIZE (vals));
 
     vals[0].derive = stats[j].rx_pkts;
     vals[1].derive = stats[j].tx_pkts;
-    virt2_submit ("", vm->uuid, "if_packets", name, vals, STATIC_ARRAY_SIZE (vals));
+    virt2_submit (inst->conf, vm, "if_packets", display_name, vals, STATIC_ARRAY_SIZE (vals));
 
     vals[0].derive = stats[j].rx_errs;
     vals[1].derive = stats[j].tx_errs;
-    virt2_submit ("", vm->uuid, "if_errors", name, vals, STATIC_ARRAY_SIZE (vals));
+    virt2_submit (inst->conf, vm, "if_errors", display_name, vals, STATIC_ARRAY_SIZE (vals));
 
     vals[0].derive = stats[j].rx_drop;
     vals[1].derive = stats[j].tx_drop;
-    virt2_submit ("", vm->uuid, "if_dropped", name, vals, STATIC_ARRAY_SIZE (vals));
+    virt2_submit (inst->conf, vm, "if_dropped", display_name, vals, STATIC_ARRAY_SIZE (vals));
   }
 
   return 0;
@@ -1194,6 +1325,107 @@ virt2_config (const char *key, const char *value)
   if (strcasecmp (key, "DebugPartitioning") == 0)
   {
     cfg->debug_partitioning = IS_TRUE (value);
+    return 0;
+  }
+  if (strcasecmp (key, "HostnameFormat") == 0)
+  {
+    int i, n;
+    char *fields[HF_MAX_FIELDS];
+    char *value_copy = strdup (value);
+    if (value_copy == NULL)
+    {
+      ERROR (PLUGIN_NAME " plugin: strdup failed.");
+      return -1;
+    }
+
+    n = strsplit (value_copy, fields, HF_MAX_FIELDS);
+    if (n < 1)
+    {
+      sfree (value_copy);
+      ERROR (PLUGIN_NAME " plugin: HostnameFormat: no fields");
+      return -1;
+    }
+
+    for (i = 0; i < n; ++i)
+    {
+      if (strcasecmp (fields[i], "hostname") == 0)
+        cfg->hostname_format[i] = hf_hostname;
+      else if (strcasecmp (fields[i], "name") == 0)
+        cfg->hostname_format[i] = hf_name;
+      else if (strcasecmp (fields[i], "uuid") == 0)
+        cfg->hostname_format[i] = hf_uuid;
+      else
+      {
+        ERROR (PLUGIN_NAME " plugin: unknown HostnameFormat field: %s", fields[i]);
+        sfree (value_copy);
+        return -1;
+      }
+    }
+    sfree (value_copy);
+
+    for (i = n; i < HF_MAX_FIELDS; ++i)
+      cfg->hostname_format[i] = hf_none;
+
+    // TODO: free fields
+    return 0;
+  }
+  if (strcasecmp (key, "PluginInstanceFormat") == 0) {
+    int i, n;
+    char *fields[PLGINST_MAX_FIELDS];
+    char *value_copy = strdup (value);
+    if (value_copy == NULL)
+    {
+      ERROR (PLUGIN_NAME " plugin: strdup failed.");
+      return -1;
+    }
+
+    n = strsplit (value_copy, fields, PLGINST_MAX_FIELDS);
+    if (n < 1)
+    {
+      sfree (value_copy);
+      ERROR (PLUGIN_NAME " plugin: PluginInstanceFormat: no fields");
+      return -1;
+    }
+
+    for (i = 0; i < n; ++i) {
+      if (strcasecmp (fields[i], "none") == 0)
+      {
+        cfg->plugin_instance_format[i] = plginst_none;
+        break;
+      }
+      else if (strcasecmp (fields[i], "name") == 0)
+        cfg->plugin_instance_format[i] = plginst_name;
+      else if (strcasecmp (fields[i], "uuid") == 0)
+        cfg->plugin_instance_format[i] = plginst_uuid;
+      else
+      {
+        ERROR (PLUGIN_NAME " plugin: unknown PluginInstanceFormat field: %s", fields[i]);
+        sfree (value_copy);
+        return -1;
+      }
+    }
+    sfree (value_copy);
+
+    for (i = n; i < PLGINST_MAX_FIELDS; ++i)
+      cfg->plugin_instance_format[i] = plginst_none;
+
+    // TODO: free fields
+    return 0;
+  }
+
+  if (strcasecmp (key, "InterfaceFormat") == 0)
+  {
+    if (strcasecmp (value, "name") == 0)
+      cfg->interface_format = if_name;
+    else if (strcasecmp (value, "address") == 0)
+      cfg->interface_format = if_address;
+    else if (strcasecmp (value, "number") == 0)
+      cfg->interface_format = if_number;
+    else
+    {
+      ERROR (PLUGIN_NAME " plugin: unknown InterfaceFormat: %s", value);
+      return -1;
+    }
     return 0;
   }
 

@@ -30,6 +30,11 @@ char *sstrdup(const char *s)
   return strdup (s);
 }
 
+int strsplit (char *string, char **fields, size_t size)
+{
+  return 0;
+}
+
 void plugin_log (int level, const char *format, ...)
 {
   if (getenv ("VIRT2_TEST_DEBUG"))
