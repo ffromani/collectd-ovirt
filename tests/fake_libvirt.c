@@ -26,3 +26,12 @@ virDomainGetXMLDesc (virDomainPtr _dom)
   return strdup (dom->xml);
 }
 
+const char *
+virDomainGetName (virDomainPtr _dom)
+{
+  if (!_dom)
+    return NULL;
+  fakeVirDomainPtr dom = (fakeVirDomainPtr)_dom;
+  return dom->name;
+}
+

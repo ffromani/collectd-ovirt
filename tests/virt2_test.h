@@ -6,6 +6,7 @@
 typedef struct fakeVirDomain *fakeVirDomainPtr;
 struct fakeVirDomain {
   char uuid[UUID_STRLEN + 1];
+  char *name;
   char *xml;
 };
 

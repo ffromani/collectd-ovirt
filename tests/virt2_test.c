@@ -289,9 +289,10 @@ DEF_TEST(virt2_partition_domains_none)
 
 /* we are cheating with pointers anyway, so I'm intentionally using void * */
 static void *
-alloc_domain (const char *uuid, const char *xml_file_name)
+alloc_domain (const char *name, const char *uuid, const char *xml_file_name)
 {
   fakeVirDomainPtr dom = calloc (1, sizeof (struct fakeVirDomain));
+  dom->name = strdup (name);
   strncpy (dom->uuid, "testing", sizeof (dom->uuid));
   dom->xml = read_xml (xml_file_name);
   return dom;
@@ -301,6 +302,7 @@ static void
 free_domain (void *_dom)
 {
   fakeVirDomainPtr dom = _dom;
+  free (dom->name);
   free (dom->xml);
   free (dom);
 }
@@ -321,7 +323,7 @@ DEF_TEST(virt2_partition_domains_one_untagged)
 
   inst->domains_num = 1;
   inst->domains_all = calloc (1, sizeof (virDomainPtr));
-  inst->domains_all[0] = alloc_domain ("testing", "minimal.xml");
+  inst->domains_all[0] = alloc_domain ("test", "testing", "minimal.xml");
 
   GArray *part = virt2_partition_domains (inst, always_partitionable);
   EXPECT_EQ_INT (1, part->len);
@@ -356,7 +358,7 @@ DEF_TEST(virt2_partition_domains_one_untagged_unpicked)
 
   inst->domains_num = 1;
   inst->domains_all = calloc (1, sizeof (virDomainPtr));
-  inst->domains_all[0] = alloc_domain ("testing", "minimal.xml");
+  inst->domains_all[0] = alloc_domain ("test", "testing", "minimal.xml");
 
   GArray *part = virt2_partition_domains (inst, always_partitionable);
   EXPECT_EQ_INT (0, part->len);
