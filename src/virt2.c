@@ -69,6 +69,11 @@ const char *virt2_config_keys[] = {
 
   "RefreshInterval",
 
+  "Domain",
+  "BlockDevice",
+  "InterfaceDevice",
+  "IgnoreSelected",
+
   "HostnameFormat",
   "InterfaceFormat",
 
@@ -147,6 +152,9 @@ struct virt2_user_data_s {
 struct virt2_state_s {
   virConnectPtr conn;
   GHashTable *known_tags;
+  ignorelist_t *il_domains;
+  ignorelist_t *il_block_devices;
+  ignorelist_t *il_iface_devices;
   size_t instances;
 };
 
@@ -305,6 +313,27 @@ strstartswith(const char *longest, const char *prefix)
 {
     char *ret = strstr(longest, prefix);
     return ret == longest;
+}
+
+static int
+ignore_device_match (ignorelist_t *il, const char *domname, const char *devpath)
+{
+    char *name;
+    int n, r;
+
+    if ((domname == NULL) || (devpath == NULL))
+        return 0;
+
+    n = strlen (domname) + strlen (devpath) + 2;
+    name = malloc (n);
+    if (name == NULL) {
+        ERROR (PLUGIN_NAME " plugin: malloc failed.");
+        return 0;
+    }
+    ssnprintf (name, n, "%s:%s", domname, devpath);
+    r = ignorelist_match (il, name);
+    sfree (name);
+    return r;
 }
 
 
@@ -868,6 +897,10 @@ virt2_dispatch_block (virt2_instance_t *inst, const VMInfo *vm)
     const BlockStats *stats = (vm->block.xstats) ?vm->block.xstats :vm->block.stats;
     const char *name = stats[j].xname ?stats[j].xname :stats[j].name;
 
+    if (inst->state->il_block_devices &&
+        ignore_device_match (inst->state->il_block_devices, vm->name, name) != 0)
+      continue;
+
     vals[0].derive = stats[j].rd_reqs;
     vals[1].derive = stats[j].wr_reqs;
     virt2_submit (inst->conf, vm, "disk_ops", name, vals, STATIC_ARRAY_SIZE (vals));
@@ -887,23 +920,29 @@ virt2_dispatch_iface (virt2_instance_t *inst, const VMInfo *vm)
 
   for (j = 0; j < vm->iface.nstats; j++)
   {
-    char if_num_buf[32] = { '\0' }; // TODO
+    char iface_num[32] = { '\0' }; // TODO
     const IFaceStats *stats = (vm->iface.xstats) ?vm->iface.xstats :vm->iface.stats;
+    const char *iface_name = stats[j].xname ?stats[j].xname :stats[j].name;
     const char *display_name = NULL;
+
+    if (inst->state->il_iface_devices &&
+        ignore_device_match (inst->state->il_iface_devices, vm->name, iface_name) != 0)
+      // TODO: check match by address
+      continue;
 
     switch (inst->conf->interface_format)
     {
       case if_address:
         ERROR (PLUGIN_NAME " plugin: not yet supported, fallback to 'name'");
-        display_name = stats[j].xname ?stats[j].xname :stats[j].name;
+        display_name = iface_name;
         break;
       case if_number:
-        ssnprintf (if_num_buf, sizeof (if_num_buf), "interface-%zu", j+1);
-        display_name = if_num_buf;
+        ssnprintf (iface_num, sizeof (iface_num), "interface-%zu", j+1);
+        display_name = iface_num;
         break;
       case if_name: // fallthrough
       default:
-        display_name = stats[j].xname ?stats[j].xname :stats[j].name;
+        display_name = iface_name;
         break;
     }
 
@@ -1178,6 +1217,13 @@ virt2_instance_include_domain (virt2_domain_t *vdom, virt2_instance_t *inst)
   return (strcmp (vdom->tag, inst->tag) == 0);
 }
 
+static int
+virt2_domain_ignored (virt2_instance_t *inst, virDomainPtr dom)
+{
+  const char *name = virDomainGetName(dom);
+  return (inst->state->il_domains && ignorelist_match (inst->state->il_domains, name) != 0);
+}
+
 static GArray *
 virt2_partition_domains (virt2_instance_t *inst,
                          int (*domain_partitionable) (virt2_domain_t *vdom, virt2_instance_t *inst))
@@ -1187,7 +1233,10 @@ virt2_partition_domains (virt2_instance_t *inst,
   for (size_t i = 0; i < inst->domains_num; i++)
   {
     virt2_domain_t vdom = { NULL };
-    int err = virt2_domain_init (&vdom, inst->domains_all[i]);
+    int err;
+    if (virt2_domain_ignored (inst, inst->domains_all[i]))
+      continue;
+    err = virt2_domain_init (&vdom, inst->domains_all[i]);
     if (err)
       continue;
     if (!domain_partitionable (&vdom, inst))
@@ -1248,6 +1297,9 @@ static int
 virt2_setup (virt2_context_t *ctx)
 {
   ctx->state.known_tags = g_hash_table_new (g_str_hash, g_str_equal);
+  ctx->state.il_domains = NULL; /* will be created lazily */
+  ctx->state.il_block_devices = NULL; /* ditto */
+  ctx->state.il_iface_devices = NULL; /* ditto */
 
   for (size_t i = 0; i < ctx->state.instances; i++)
     // TODO: what if this fails?
@@ -1259,6 +1311,13 @@ virt2_setup (virt2_context_t *ctx)
 static int
 virt2_teardown (virt2_context_t *ctx)
 {
+  if (ctx->state.il_domains != NULL)
+    ignorelist_free (ctx->state.il_domains);
+  if (ctx->state.il_block_devices != NULL)
+    ignorelist_free (ctx->state.il_block_devices);
+  if (ctx->state.il_iface_devices != NULL)
+    ignorelist_free (ctx->state.il_iface_devices);
+
   g_hash_table_destroy (ctx->state.known_tags);
   return 0;
 }
@@ -1327,6 +1386,48 @@ virt2_config (const char *key, const char *value)
   if (strcasecmp (key, "DebugPartitioning") == 0)
   {
     cfg->debug_partitioning = IS_TRUE (value);
+    return 0;
+  }
+
+  if (strcasecmp (key, "Domain") == 0)
+  {
+    if (ctx->state.il_domains == NULL)
+      ctx->state.il_domains = ignorelist_create (1);
+    if (ignorelist_add (ctx->state.il_domains, value))
+      return 1;
+    return 0;
+  }
+  if (strcasecmp (key, "BlockDevice") == 0)
+  {
+    if (ctx->state.il_block_devices == NULL)
+      ctx->state.il_block_devices = ignorelist_create (1);
+    if (ignorelist_add (ctx->state.il_block_devices, value))
+      return 1;
+    return 0;
+  }
+  if (strcasecmp (key, "InterfaceDevice") == 0)
+  {
+    if (ctx->state.il_iface_devices == NULL)
+      ctx->state.il_iface_devices = ignorelist_create (1);
+    if (ignorelist_add (ctx->state.il_iface_devices, value))
+      return 1;
+    return 0;
+  }
+
+  if (strcasecmp (key, "IgnoreSelected") == 0)
+  {
+    if (IS_TRUE (value))
+    {
+      ignorelist_set_invert (ctx->state.il_domains, 0);
+      ignorelist_set_invert (ctx->state.il_block_devices, 0);
+      ignorelist_set_invert (ctx->state.il_iface_devices, 0);
+    }
+    else
+    {
+      ignorelist_set_invert (ctx->state.il_domains, 1);
+      ignorelist_set_invert (ctx->state.il_block_devices, 1);
+      ignorelist_set_invert (ctx->state.il_iface_devices, 1);
+    }
     return 0;
   }
   if (strcasecmp (key, "HostnameFormat") == 0)

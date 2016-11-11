@@ -92,3 +92,28 @@ int plugin_dispatch_values (value_list_t const *vl)
   return 0;
 }
 
+ignorelist_t *ignorelist_create (int invert)
+{
+  return NULL;
+}
+
+void ignorelist_free (ignorelist_t *il)
+{
+  return;
+}
+
+void ignorelist_set_invert (ignorelist_t *il, int invert)
+{
+  return;
+}
+
+int ignorelist_add (ignorelist_t *il, const char *entry)
+{
+  return 0;
+}
+
+int ignorelist_match (ignorelist_t *il, const char *entry)
+{
+  return 0;
+}
+
