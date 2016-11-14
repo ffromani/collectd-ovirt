@@ -1,5 +1,5 @@
 /**
- * collectd-ovirt/virt2_test.c
+ * collectd-ovirt - src/virt2.c
  * Copyright (C) 2016 Francesco Romani <fromani at redhat.com>
  * Based on
  * collectd - src/virt.c
@@ -59,9 +59,10 @@
 #define METADATA_VM_PARTITION_PREFIX "ovirtmap"
 
 enum {
-  INSTANCES_DEFAULT_NUM = 5,
+  INSTANCES_DEFAULT_NUM = 1,
   BUFFER_MAX_LEN = 256,
   PARTITION_TAG_MAX_LEN = 32,
+  INTERFACE_NUMBER_MAX_LEN = 32,
   INSTANCES_MAX = 128,
   VM_VALUES_NUM = 256,
 };
@@ -92,26 +93,26 @@ const char *virt2_config_keys[] = {
 #define HF_MAX_FIELDS 3
 
 enum hf_field {
-    hf_none = 0,
-    hf_hostname,
-    hf_name,
-    hf_uuid
+  hf_none = 0,
+  hf_hostname,
+  hf_name,
+  hf_uuid
 };
 
 /* PluginInstanceFormat */
 #define PLGINST_MAX_FIELDS 2
 
 enum plginst_field {
-    plginst_none = 0,
-    plginst_name,
-    plginst_uuid
+  plginst_none = 0,
+  plginst_name,
+  plginst_uuid
 };
 
 /* InterfaceFormat. */
 enum if_field {
-    if_address,
-    if_name,
-    if_number
+  if_address,
+  if_name,
+  if_number
 };
 
 
@@ -188,22 +189,22 @@ typedef int (*virt2_domain_check_func_t) (virt2_domain_t *vdom, virt2_instance_t
 static int
 ignore_device_match (ignorelist_t *il, const char *domname, const char *devpath)
 {
-    char *name;
-    int n, r;
+  char *name;
+  int n, r;
 
-    if ((domname == NULL) || (devpath == NULL))
-        return 0;
+  if ((domname == NULL) || (devpath == NULL))
+    return 0;
 
-    n = strlen (domname) + strlen (devpath) + 2;
-    name = malloc (n);
-    if (name == NULL) {
-        ERROR (PLUGIN_NAME " plugin: malloc failed.");
-        return 0;
-    }
-    ssnprintf (name, n, "%s:%s", domname, devpath);
-    r = ignorelist_match (il, name);
-    sfree (name);
-    return r;
+  n = strlen (domname) + strlen (devpath) + 2;
+  name = malloc (n);
+  if (name == NULL) {
+      ERROR (PLUGIN_NAME " plugin: malloc failed.");
+      return 0;
+  }
+  ssnprintf (name, n, "%s:%s", domname, devpath);
+  r = ignorelist_match (il, name);
+  sfree (name);
+  return r;
 }
 
 /* *** */
@@ -306,7 +307,6 @@ virt2_submit (const virt2_config_t *cfg, const VMInfo *info,
               const char *type, const char *type_instance,
               value_t *values, size_t values_len)
 {
-  int i, n;
   value_list_t vl = VALUE_LIST_INIT;
 
   sstrncpy (vl.plugin, PLUGIN_NAME, sizeof (vl.plugin));
@@ -357,9 +357,11 @@ virt2_dispatch_memory (virt2_instance_t *inst, const VMInfo *vm)
      "swap_in", "swap_out", "major_fault", "minor_fault",
      "unused", "available", "actual_balloon", "rss"
     };
-    if ((vm->memstats[j].tag) || (vm->memstats[j].tag >= STATIC_ARRAY_SIZE (tags)))
+    if ((vm->memstats[j].tag < 0) ||
+        (vm->memstats[j].tag >= STATIC_ARRAY_SIZE (tags)))
     {
-      // TODO: ERROR
+      ERROR (PLUGIN_NAME " plugin#%s: unknown tag %i",
+             inst->tag, vm->memstats[j].tag);
       continue;
     }
     val.gauge = vm->memstats[j].val * 1024;
@@ -386,15 +388,14 @@ virt2_dispatch_balloon (virt2_instance_t *inst, const VMInfo *vm)
 static int
 virt2_dispatch_block (virt2_instance_t *inst, const VMInfo *vm)
 {
-  value_t vals[2]; // TODO: magic number
+  value_t vals[2];
 
-  // TODO: display name
   for (size_t j = 0; j < vm->block.nstats; j++)
   {
     const BlockStats *stats = (vm->block.xstats) ?vm->block.xstats :vm->block.stats;
     const char *name = stats[j].xname ?stats[j].xname :stats[j].name;
 
-    if (inst->state->il_block_devices &&
+    if (inst->state->il_block_devices != NULL &&
         ignore_device_match (inst->state->il_block_devices, vm->name, name) != 0)
       continue;
 
@@ -417,12 +418,12 @@ virt2_dispatch_iface (virt2_instance_t *inst, const VMInfo *vm)
 
   for (j = 0; j < vm->iface.nstats; j++)
   {
-    char iface_num[32] = { '\0' }; // TODO
+    char iface_num[INTERFACE_NUMBER_MAX_LEN] = { '\0' };
     const IFaceStats *stats = (vm->iface.xstats) ?vm->iface.xstats :vm->iface.stats;
     const char *iface_name = stats[j].xname ?stats[j].xname :stats[j].name;
     const char *display_name = NULL;
 
-    if (inst->state->il_iface_devices &&
+    if (inst->state->il_iface_devices != NULL &&
         ignore_device_match (inst->state->il_iface_devices, vm->name, iface_name) != 0)
       // TODO: check match by address
       continue;
@@ -465,7 +466,7 @@ virt2_dispatch_iface (virt2_instance_t *inst, const VMInfo *vm)
 
 /* *** */
 
-static int
+static size_t
 virt2_get_optimal_instance_count (virt2_context_t *ctx)
 {
   /*
@@ -473,11 +474,11 @@ virt2_get_optimal_instance_count (virt2_context_t *ctx)
    * the ADMIN API for the worker thread pool size, and return
    * that value.
    */
-  int num = ctx->conf.instances;
+  size_t num = ctx->conf.instances;
   if (num == 0) {
     num = INSTANCES_DEFAULT_NUM;
   }
-  INFO (PLUGIN_NAME " plugin: using %i instances (configured=%i)",
+  INFO (PLUGIN_NAME " plugin: using %zu instances (configured=%zu)",
         num, ctx->conf.instances);
   return num;
 }
@@ -496,7 +497,7 @@ virt2_init_instance (virt2_context_t *ctx, size_t i,
 
   user_data_t *ud = &user_data->ud;
   ud->data = inst;
-  ud->free_func = NULL; // TODO
+  ud->free_func = NULL;
 
   g_hash_table_add (ctx->state.known_tags, inst->tag);
   return plugin_register_complex_read (NULL, inst->tag, func_body,
@@ -519,7 +520,7 @@ virt2_domain_get_tag(virt2_domain_t *vdom, const char *xml)
     goto done;
   }
 
-  xml_doc = xmlReadDoc (xml, NULL, NULL, XML_PARSE_NONET|XML_PARSE_NSCLEAN);
+  xml_doc = xmlReadDoc ((const xmlChar *)xml, NULL, NULL, XML_PARSE_NONET|XML_PARSE_NSCLEAN);
   if (xml_doc == NULL)
   {
     ERROR (PLUGIN_NAME " plugin: xmlReadDoc() failed on domain %s", vdom->uuid);
@@ -527,7 +528,9 @@ virt2_domain_get_tag(virt2_domain_t *vdom, const char *xml)
   }
 
   xpath_ctx = xmlXPathNewContext (xml_doc);
-  err = xmlXPathRegisterNs (xpath_ctx, METADATA_VM_PARTITION_PREFIX, METADATA_VM_PARTITION_URI);
+  err = xmlXPathRegisterNs (xpath_ctx,
+                            (const xmlChar *)METADATA_VM_PARTITION_PREFIX,
+                            (const xmlChar *)METADATA_VM_PARTITION_URI);
   if (err)
   {
     ERROR (PLUGIN_NAME " plugin: xmlXpathRegisterNs(%s, %s) failed on domain %s",
@@ -537,7 +540,7 @@ virt2_domain_get_tag(virt2_domain_t *vdom, const char *xml)
 
   ssnprintf (xpath_str, sizeof (xpath_str), "/domain/metadata/%s:%s/text()",
              METADATA_VM_PARTITION_PREFIX, METADATA_VM_PARTITION_ELEMENT);
-  xpath_obj = xmlXPathEvalExpression (xpath_str, xpath_ctx);
+  xpath_obj = xmlXPathEvalExpression ((xmlChar *)xpath_str, xpath_ctx);
   if (xpath_obj == NULL)
   {
     ERROR (PLUGIN_NAME " plugin: xmlXPathEval(%s) failed on domain %s", xpath_str, vdom->uuid);
@@ -565,7 +568,7 @@ virt2_domain_get_tag(virt2_domain_t *vdom, const char *xml)
            vdom->uuid);
   } else {
     xml_node = xpath_obj->nodesetval->nodeTab[0];
-    sstrncpy (vdom->tag, xml_node->content, sizeof (vdom->tag));
+    sstrncpy (vdom->tag, (const char *)xml_node->content, sizeof (vdom->tag));
   }
 
 done:
@@ -653,10 +656,10 @@ virt2_domain_init (virt2_domain_t *vdom, virDomainPtr dom)
   virDomainGetUUIDString (dom, vdom->uuid);
 
   unsigned int flags = 0;
-  const char *dom_xml = virDomainGetXMLDesc (dom, flags);
-  if (!dom_xml)
+  char *dom_xml = virDomainGetXMLDesc (dom, flags);
+  if (dom_xml == NULL)
   {
-    ERROR (PLUGIN_NAME, " plugin: domain %s don't provide XML: %s",
+    ERROR (PLUGIN_NAME " plugin: domain %s don't provide XML: %s",
            vdom->uuid, virGetLastErrorMessage());
     return -1;
   }
@@ -705,7 +708,7 @@ virt2_instance_include_domain (virt2_domain_t *vdom, virt2_instance_t *inst)
         !g_hash_table_contains (inst->state->known_tags, vdom->tag))
     {
       if (inst->conf->debug_partitioning)
-          WARNING (PLUGIN_NAME, " plugin#%s: adopted domain %s "
+          WARNING (PLUGIN_NAME " plugin#%s: adopted domain %s "
                    "with unknown tag '%s'",
                    inst->tag, vdom->uuid, vdom->tag);
       return 1;
@@ -726,6 +729,12 @@ virt2_partition_domains (virt2_instance_t *inst,
                          int (*domain_partitionable) (virt2_domain_t *vdom, virt2_instance_t *inst))
 {
   GArray *doms = g_array_sized_new (TRUE, FALSE, sizeof(virDomainPtr), inst->domains_num);
+  if (!doms)
+  {
+    ERROR (PLUGIN_NAME " plugin#%s: cannot allocate the libvirt domain partition (%zu domains)",
+           inst->tag, inst->domains_num);
+    return NULL;
+  }
 
   for (size_t i = 0; i < inst->domains_num; i++)
   {
@@ -754,22 +763,16 @@ virt2_read_domains (user_data_t *ud)
   virt2_instance_t *inst = ud->data;
   if (!inst)
   {
-      // TODO ERROR
+      ERROR (PLUGIN_NAME " plugin: NULL userdata");
       return -1;
   }
 
   err = virt2_acquire_domains (inst);
   if (err)
-  {
-      // TODO ERROR
       return -1;
-  }
 
   if (inst->domains_num == 0)
-  {
-    /* nothing to do here, but it's OK */
-    return 0;
-  }
+    return 0; /* nothing to do here, but it's OK */
 
   virt2_domain_check_func_t checker = (inst->conf->domain_check)
     ? virt2_domain_is_ready
@@ -781,10 +784,7 @@ virt2_read_domains (user_data_t *ud)
     g_array_free (doms, TRUE);
   }
   else
-  {
-    // TODO ERROR
     err = -1;
-  }
 
   virt2_release_domains (inst);
   return err;
@@ -799,7 +799,6 @@ virt2_setup (virt2_context_t *ctx)
   ctx->state.il_iface_devices = NULL; /* ditto */
 
   for (size_t i = 0; i < ctx->state.instances; i++)
-    // TODO: what if this fails?
     virt2_init_instance (ctx, i, virt2_read_domains);
 
   return 0;
@@ -847,13 +846,13 @@ virt2_config (const char *key, const char *value)
       return 1;
     if (val <= 0)
     {
-      // TODO: remove once we have autotune
+      // TODO: remove once we have autotune using libvirt admin API
       ERROR (PLUGIN_NAME " plugin: Instances <= 0 makes no sense.");
       return 1;
     }
     if (val > INSTANCES_MAX)
     {
-      ERROR (PLUGIN_NAME " plugin: Instances=%li > INSTANCES_MAX=%li"
+      ERROR (PLUGIN_NAME " plugin: Instances=%li > INSTANCES_MAX=%i"
              " use a lower setting or recompile the plugin.",
              val, INSTANCES_MAX);
       return 1;
@@ -966,7 +965,6 @@ virt2_config (const char *key, const char *value)
     for (i = n; i < HF_MAX_FIELDS; ++i)
       cfg->hostname_format[i] = hf_none;
 
-    // TODO: free fields
     return 0;
   }
   if (strcasecmp (key, "PluginInstanceFormat") == 0) {
@@ -1009,7 +1007,6 @@ virt2_config (const char *key, const char *value)
     for (i = n; i < PLGINST_MAX_FIELDS; ++i)
       cfg->plugin_instance_format[i] = plginst_none;
 
-    // TODO: free fields
     return 0;
   }
 
