@@ -82,6 +82,8 @@ const char *virt2_config_keys[] = {
 
   "PluginInstanceFormat",
 
+  "ReportByState",
+
   "Instances",
   "DomainCheck",
   "DebugPartitioning",
@@ -126,6 +128,7 @@ struct virt2_config_s {
   enum hf_field hostname_format[HF_MAX_FIELDS];
   enum plginst_field plugin_instance_format[PLGINST_MAX_FIELDS];
   enum if_field interface_format;
+  int report_by_state;
   /* not user-facing */
   int stats;
   int flags;
@@ -322,14 +325,26 @@ virt2_submit (const virt2_config_t *cfg, const VMInfo *info,
   return 0;
 }
 
+// TODO: sync with types.db
+
 static int
 virt2_dispatch_cpu (virt2_instance_t *inst, const VMInfo *vm)
 {
   value_t val;
 
-  val.derive = vm->info.cpuTime;
-  virt2_submit (inst->conf, vm, "virt_cpu_total", "", &val, 1);
-  // TODO: cpu.user, cpu.sys, cpu.total
+  if (inst->conf->report_by_state)
+  {
+    value_t vals[3]; // TODO: magic number
+    vals[0].derive = vm->pcpu.user;
+    vals[1].derive = vm->pcpu.system;
+    vals[2].derive = vm->pcpu.time - (vm->pcpu.user + vm->pcpu.system);
+    virt2_submit (inst->conf, vm, "virt_cpu_stats", "", vals, STATIC_ARRAY_SIZE (vals));
+  }
+  else
+  {
+    val.derive = vm->info.cpuTime;
+    virt2_submit (inst->conf, vm, "virt_cpu_total", "", &val, 1);
+  }
 
   for (size_t j = 0; j < vm->vcpu.nstats; j++)
   {
@@ -338,6 +353,7 @@ virt2_dispatch_cpu (virt2_instance_t *inst, const VMInfo *vm)
     const VCpuStats *stats = (vm->vcpu.xstats) ?vm->vcpu.xstats :vm->vcpu.stats;
     val.derive = stats[j].time;
     virt2_submit (inst->conf, vm, "virt_vcpu", type_instance, &val, 1);
+    // TODO: anything else?
   }
 
   return 0;
@@ -370,6 +386,20 @@ virt2_dispatch_memory (virt2_instance_t *inst, const VMInfo *vm)
 }
 
 static int
+virt2_dispatch_balloon (virt2_instance_t *inst, const VMInfo *vm)
+{
+  value_t val;
+
+  val.gauge = vm->balloon.current;
+  virt2_submit (inst->conf, vm, "balloon_current", "", &val, 1);
+
+  val.gauge = vm->balloon.maximum;
+  virt2_submit (inst->conf, vm, "balloon_maximum", "", &val, 1);
+
+  return 0;
+}
+
+static int
 virt2_dispatch_block (virt2_instance_t *inst, const VMInfo *vm)
 {
   value_t vals[2];
@@ -390,6 +420,8 @@ virt2_dispatch_block (virt2_instance_t *inst, const VMInfo *vm)
     vals[0].derive = stats[j].rd_bytes;
     vals[1].derive = stats[j].wr_bytes;
     virt2_submit (inst->conf, vm, "disk_octets", name, vals, STATIC_ARRAY_SIZE (vals));
+
+    // TODO: {read,write,flush}Latency
   }
   return 0;
 }
@@ -604,6 +636,7 @@ virt2_dispatch_samples (virt2_instance_t *inst, virDomainStatsRecordPtr *records
 
     virt2_dispatch_cpu (inst, &vm);
     virt2_dispatch_memory (inst, &vm);
+    virt2_dispatch_balloon (inst, &vm);
     virt2_dispatch_block (inst, &vm);
     virt2_dispatch_iface (inst, &vm);
 
@@ -865,6 +898,11 @@ virt2_config (const char *key, const char *value)
   if (strcasecmp (key, "DebugPartitioning") == 0)
   {
     cfg->debug_partitioning = IS_TRUE (value);
+    return 0;
+  }
+  if (strcasecmp (key, "ReportByState") == 0)
+  {
+    cfg->report_by_state = IS_TRUE (value);
     return 0;
   }
 
