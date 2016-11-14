@@ -322,8 +322,6 @@ virt2_submit (const virt2_config_t *cfg, const VMInfo *info,
   return 0;
 }
 
-// TODO: sync with types.db
-
 static int
 virt2_dispatch_cpu (virt2_instance_t *inst, const VMInfo *vm)
 {
@@ -367,20 +365,6 @@ virt2_dispatch_memory (virt2_instance_t *inst, const VMInfo *vm)
     val.gauge = vm->memstats[j].val * 1024;
     virt2_submit (inst->conf, vm, "memory", tags[vm->memstats[j].tag], &val, 1);
   }
-
-  return 0;
-}
-
-static int
-virt2_dispatch_balloon (virt2_instance_t *inst, const VMInfo *vm)
-{
-  value_t val;
-
-  val.absolute = vm->balloon.current;
-  virt2_submit (inst->conf, vm, "balloon", "current", &val, 1);
-
-  val.absolute = vm->balloon.maximum;
-  virt2_submit (inst->conf, vm, "balloon", "maximum", &val, 1);
 
   return 0;
 }
@@ -620,7 +604,6 @@ virt2_dispatch_samples (virt2_instance_t *inst, virDomainStatsRecordPtr *records
 
     virt2_dispatch_cpu (inst, &vm);
     virt2_dispatch_memory (inst, &vm);
-    virt2_dispatch_balloon (inst, &vm);
     virt2_dispatch_block (inst, &vm);
     virt2_dispatch_iface (inst, &vm);
 
