@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<domain xmlns:ns0="http://ovirt.org/vm/tune/1.0" xmlns:ns1="http://github.com/ovirt/containers/1.0" xmlns:ns2="http://github.com/ovirt/containers/drivemap/1.0" type="kvm">
+  <metadata>
+	  <ns0:qos />
+  	<ns1:container image="foobar">foobar</ns1:container>
+	  <ns2:drivemap>
+		  <volume drive="vda" name="data1" />
+  		<volume drive="vdb" name="data2" />
+	  </ns2:drivemap>
+    <ovirtmap:tag xmlns:ovirtmap="http://ovirt.org/ovirtmap/tag/1.0">virt-0</ovirtmap:tag>
+  </metadata>
+</domain>

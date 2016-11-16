@@ -123,6 +123,23 @@ DEF_TEST(virt2_domain_get_tag_valid_xml)
   return 0;
 }
 
+DEF_TEST(virt2_domain_get_tag_crowded_xml)
+{
+  virt2_domain_t vdom;
+  memset (&vdom, 0, sizeof (vdom));
+  sstrncpy (vdom.uuid, "testing", sizeof (vdom.uuid));
+
+  char *xml_str = read_xml ("crowded_metadata.xml");
+
+  int err = virt2_domain_get_tag (&vdom, xml_str);
+  free (xml_str);
+
+  EXPECT_EQ_INT (0, err);
+  EXPECT_EQ_STR (TAG, vdom.tag);
+
+  return 0;
+}
+
 DEF_TEST(virt_default_instance_include_domain_without_tag)
 {
   int ret;
@@ -380,6 +397,7 @@ int main (void)
   RUN_TEST(virt2_domain_get_tag_empty_xml);
   RUN_TEST(virt2_domain_get_tag_no_metadata_xml);
   RUN_TEST(virt2_domain_get_tag_valid_xml);
+  RUN_TEST(virt2_domain_get_tag_crowded_xml);
 
   RUN_TEST(virt_include_domain_matching_tags);
   RUN_TEST(virt_default_instance_include_domain_without_tag);
