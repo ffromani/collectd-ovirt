@@ -1,4 +1,4 @@
-# the virt2 collectd plugin
+# The virt2 collectd plugin
 
 `virt2` is an up-to-date plugin for collectd to monitor
 VMs running on a host, using [libvirt](http://libvirt.org).
@@ -9,7 +9,7 @@ project.
 
 `virt2` requires libvirt >= 2.0.0
 
-## resiliency against slow reads or slow storage
+## Resiliency against slow reads or slow storage
 
 The virt2 plugin must cope with very long response time from libvirt.
 There are well known causes for this slowness of libvirt (see below),
@@ -74,7 +74,7 @@ worker pool size, using its
 
 
 
-BRAINDUMP
+Braindump
 =========
 
 - instances configurable via config dropin
