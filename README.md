@@ -72,10 +72,7 @@ worker pool. One way to do this could be to query libvirt for the available
 worker pool size, using its
 [admin API](http://events.linuxfoundation.org/sites/events/files/slides/libvirt-admin-api-kvm-forum_0.pdf).
 
-
-
-Braindump
-=========
+### Braindump
 
 - instances configurable via config dropin
   -- either implicitely or explicitely
