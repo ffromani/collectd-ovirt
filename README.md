@@ -25,10 +25,10 @@ return after a long period -even hours) is unresponsive or unreachable
 storage.
 
 I/O operations can block forever inside the kernel if shared storage
-becomes unreachable. The process state will change to 'D' (dead).
-QEMU is no exception to this. On data centers, is standard practice
-to have shared storage, either file-based (NFS) or block-based
-(ISCSI SANs, fiber-channel SANs).
+becomes unreachable. The process state will change to 'D'
+(uninterruptible disk sleep).  QEMU is no exception to this. On data
+centers, is standard practice to have shared storage, either file-based
+(NFS) or block-based (ISCSI SANs, fiber-channel SANs).
 
 To get the VM disk stats when the VM uses block storage, the management
 application -libvirt- *must* use the QEMU monitor, which uses a simple
