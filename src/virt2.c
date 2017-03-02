@@ -88,6 +88,7 @@ const char *virt2_config_keys[] = {
   "DomainCheck",
   "DebugPartitioning",
   "ExtraStats",
+  "ReportAbsolutes",
   NULL
 };
 #define NR_CONFIG_KEYS ((sizeof virt2_config_keys / sizeof virt2_config_keys[0]) - 1)
@@ -120,6 +121,8 @@ enum if_field {
 
 /* ExtraStats */
 #define EX_STATS_MAX_FIELDS 8
+
+
 enum ex_stats { ex_stats_none = 0, ex_stats_disk = 1, ex_stats_pcpu = 2 };
 
 struct ex_stats_item {
@@ -144,6 +147,7 @@ struct virt2_config_s {
   enum plginst_field plugin_instance_format[PLGINST_MAX_FIELDS];
   enum if_field interface_format;
   unsigned int extra_stats;
+  int report_absolutes;
   /* not user-facing */
   int stats;
   int flags;
@@ -341,12 +345,38 @@ virt2_submit (const virt2_config_t *cfg, const VMInfo *info,
   return 0;
 }
 
-// TODO: sync with types.db
+static int
+virt2_submit_abs (const virt2_config_t *cfg, const VMInfo *info,
+                  const char *type, const char *type_instance,
+                  unsigned long long val)
+{
+  int ret = 0;
+  if (cfg->report_absolutes) {
+    value_t v;
+    v.gauge = val;
+    ret = virt2_submit(cfg, info, type, type_instance, &v, 1);
+  }
+  return ret;
+}
+
+static int
+virt2_submit_abs_prop (const virt2_config_t *cfg, const VMInfo *info,
+                       const char *prop, const char *group,
+                       const char *type_instance,
+                       unsigned long long val)
+{
+  char abs_name[DATA_MAX_NAME_LEN];
+  ssnprintf (abs_name, sizeof (abs_name), "%s-%s-%s",
+             prop, info->name, group);
+  return virt2_submit_abs (cfg, info, abs_name, type_instance, val);
+}
 
 static int
 virt2_dispatch_cpu (virt2_instance_t *inst, const VMInfo *vm)
 {
   value_t val;
+  char absolute_name[DATA_MAX_NAME_LEN];
+  ssnprintf (absolute_name, sizeof (absolute_name), "time_ref-%s-pcpu", vm->name);
 
   if (inst->conf->extra_stats & ex_stats_pcpu)
   {
@@ -354,11 +384,16 @@ virt2_dispatch_cpu (virt2_instance_t *inst, const VMInfo *vm)
     vals[0].derive = vm->pcpu.user;
     vals[1].derive = vm->pcpu.system;
     virt2_submit (inst->conf, vm, "ps_cputime", "", vals, STATIC_ARRAY_SIZE (vals));
+
+    virt2_submit_abs (inst->conf, vm, absolute_name, "user", vm->pcpu.user);
+    virt2_submit_abs (inst->conf, vm, absolute_name, "system", vm->pcpu.system);
   }
 
   val.derive = vm->info.cpuTime;
   virt2_submit (inst->conf, vm, "virt_cpu_total", "", &val, 1);
+  virt2_submit_abs (inst->conf, vm, absolute_name, "total", vm->info.cpuTime);
 
+  ssnprintf (absolute_name, sizeof (absolute_name), "time_ref-%s-vcpu", vm->name);
   for (size_t j = 0; j < vm->vcpu.nstats; j++)
   {
     char type_instance[DATA_MAX_NAME_LEN];
@@ -366,6 +401,7 @@ virt2_dispatch_cpu (virt2_instance_t *inst, const VMInfo *vm)
     const VCpuStats *stats = (vm->vcpu.xstats) ?vm->vcpu.xstats :vm->vcpu.stats;
     val.derive = stats[j].time;
     virt2_submit (inst->conf, vm, "virt_vcpu", type_instance, &val, 1);
+    virt2_submit_abs (inst->conf, vm, absolute_name, type_instance, stats[j].time);
   }
 
   return 0;
@@ -406,24 +442,32 @@ virt2_dispatch_block (virt2_instance_t *inst, const VMInfo *vm)
     vals[0].derive = stats[j].rd_reqs;
     vals[1].derive = stats[j].wr_reqs;
     virt2_submit (inst->conf, vm, "disk_ops", name, vals, STATIC_ARRAY_SIZE (vals));
+    virt2_submit_abs_prop (inst->conf, vm, "requests", name, "read", stats[j].rd_reqs);
+    virt2_submit_abs_prop (inst->conf, vm, "requests", name, "write", stats[j].wr_reqs);
 
     vals[0].derive = stats[j].rd_bytes;
     vals[1].derive = stats[j].wr_bytes;
     virt2_submit (inst->conf, vm, "disk_octets", name, vals, STATIC_ARRAY_SIZE (vals));
+    virt2_submit_abs_prop (inst->conf, vm, "bytes", name, "read", stats[j].rd_bytes);
+    virt2_submit_abs_prop (inst->conf, vm, "bytes", name, "write", stats[j].wr_bytes);
 
     if (inst->conf->extra_stats & ex_stats_disk) {
       vals[0].derive = stats[j].rd_times;
       vals[1].derive = stats[j].wr_times;
       virt2_submit (inst->conf, vm, "disk_time", name, vals, STATIC_ARRAY_SIZE (vals));
+      virt2_submit_abs_prop (inst->conf, vm, "time_ref", name, "read", stats[j].rd_times);
+      virt2_submit_abs_prop (inst->conf, vm, "time_ref", name, "write", stats[j].wr_times);
 
       char flush_name[DATA_MAX_NAME_LEN];
       ssnprintf (flush_name, sizeof(flush_name), "flush-%s", name);
 
       vals[0].derive = stats[j].fl_reqs;
       virt2_submit (inst->conf, vm, "total_requests", flush_name, vals, 1);
+      virt2_submit_abs_prop (inst->conf, vm, "requests", name, "flush", stats[j].fl_reqs);
 
       vals[0].derive = stats[j].fl_times / 1000; // ns -> ms
       virt2_submit (inst->conf, vm, "total_time_in_ms", flush_name, vals, 1);
+      virt2_submit_abs_prop (inst->conf, vm, "time_ref", name, "flush", stats[j].fl_times);
     }
   }
   return 0;
@@ -466,18 +510,24 @@ virt2_dispatch_iface (virt2_instance_t *inst, const VMInfo *vm)
     vals[0].derive = stats[j].rx_bytes;
     vals[1].derive = stats[j].tx_bytes;
     virt2_submit (inst->conf, vm, "if_octects", display_name, vals, STATIC_ARRAY_SIZE (vals));
+    virt2_submit_abs_prop (inst->conf, vm, "bytes", display_name, "rx", stats[j].rx_bytes);
+    virt2_submit_abs_prop (inst->conf, vm, "bytes", display_name, "tx", stats[j].tx_bytes);
 
     vals[0].derive = stats[j].rx_pkts;
     vals[1].derive = stats[j].tx_pkts;
     virt2_submit (inst->conf, vm, "if_packets", display_name, vals, STATIC_ARRAY_SIZE (vals));
+    virt2_submit_abs_prop (inst->conf, vm, "objects", display_name, "rx", stats[j].rx_pkts);
+    virt2_submit_abs_prop (inst->conf, vm, "objects", display_name, "tx", stats[j].tx_pkts);
 
     vals[0].derive = stats[j].rx_errs;
     vals[1].derive = stats[j].tx_errs;
     virt2_submit (inst->conf, vm, "if_errors", display_name, vals, STATIC_ARRAY_SIZE (vals));
+    // TODO: count?
 
     vals[0].derive = stats[j].rx_drop;
     vals[1].derive = stats[j].tx_drop;
     virt2_submit (inst->conf, vm, "if_dropped", display_name, vals, STATIC_ARRAY_SIZE (vals));
+    // TODO: count?
   }
 
   return 0;
@@ -1072,6 +1122,11 @@ virt2_config (const char *key, const char *value)
       cfg->extra_stats = parse_ex_stats_flags(exstats, numexstats);
       sfree(localvalue);
     }
+    return 0;
+  }
+  if (strcasecmp (key, "ReportAbsolutes") == 0)
+  {
+    cfg->report_absolutes = IS_TRUE (value);
     return 0;
   }
 
