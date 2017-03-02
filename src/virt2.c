@@ -87,6 +87,7 @@ const char *virt2_config_keys[] = {
   "Instances",
   "DomainCheck",
   "DebugPartitioning",
+  "ExtraStats",
   NULL
 };
 #define NR_CONFIG_KEYS ((sizeof virt2_config_keys / sizeof virt2_config_keys[0]) - 1)
@@ -117,6 +118,20 @@ enum if_field {
   if_number
 };
 
+/* ExtraStats */
+#define EX_STATS_MAX_FIELDS 8
+enum ex_stats { ex_stats_none = 0, ex_stats_disk = 1, ex_stats_pcpu = 2 };
+
+struct ex_stats_item {
+  const char *name;
+  enum ex_stats flag;
+};
+static const struct ex_stats_item ex_stats_table[] = {
+    {"disk", ex_stats_disk},
+    {"pcpu", ex_stats_pcpu},
+    {NULL, ex_stats_none},
+};
+
 
 typedef struct virt2_config_s virt2_config_t;
 struct virt2_config_s {
@@ -128,7 +143,7 @@ struct virt2_config_s {
   enum hf_field hostname_format[HF_MAX_FIELDS];
   enum plginst_field plugin_instance_format[PLGINST_MAX_FIELDS];
   enum if_field interface_format;
-  int report_by_state;
+  unsigned int extra_stats;
   /* not user-facing */
   int stats;
   int flags;
@@ -217,6 +232,7 @@ virt2_context_t default_context = {
     .hostname_format = { hf_name },
     .plugin_instance_format = { plginst_none },
     .interface_format = if_name,
+    .extra_stats = ex_stats_none,
     /*
      * Using 0 for @stats returns all stats groups supported by the given hypervisor.
      * http://libvirt.org/html/libvirt-libvirt-domain.html#virConnectGetAllDomainStats
@@ -332,19 +348,16 @@ virt2_dispatch_cpu (virt2_instance_t *inst, const VMInfo *vm)
 {
   value_t val;
 
-  if (inst->conf->report_by_state)
+  if (inst->conf->extra_stats & ex_stats_pcpu)
   {
-    value_t vals[3]; // TODO: magic number
+    value_t vals[2]; // TODO: magic number
     vals[0].derive = vm->pcpu.user;
     vals[1].derive = vm->pcpu.system;
-    vals[2].derive = vm->pcpu.time - (vm->pcpu.user + vm->pcpu.system);
-    virt2_submit (inst->conf, vm, "virt_cpu_stats", "", vals, STATIC_ARRAY_SIZE (vals));
+    virt2_submit (inst->conf, vm, "ps_cputime", "", vals, STATIC_ARRAY_SIZE (vals));
   }
-  else
-  {
-    val.derive = vm->info.cpuTime;
-    virt2_submit (inst->conf, vm, "virt_cpu_total", "", &val, 1);
-  }
+
+  val.derive = vm->info.cpuTime;
+  virt2_submit (inst->conf, vm, "virt_cpu_total", "", &val, 1);
 
   for (size_t j = 0; j < vm->vcpu.nstats; j++)
   {
@@ -353,7 +366,6 @@ virt2_dispatch_cpu (virt2_instance_t *inst, const VMInfo *vm)
     const VCpuStats *stats = (vm->vcpu.xstats) ?vm->vcpu.xstats :vm->vcpu.stats;
     val.derive = stats[j].time;
     virt2_submit (inst->conf, vm, "virt_vcpu", type_instance, &val, 1);
-    // TODO: anything else?
   }
 
   return 0;
@@ -365,23 +377,6 @@ virt2_dispatch_memory (virt2_instance_t *inst, const VMInfo *vm)
   value_t val;
   val.gauge = vm->info.memory * 1024;
   virt2_submit (inst->conf, vm, "memory", "total", &val, 1);
-  for (int j = 0; j < vm->memstats_count; j++)
-  {
-    static const char *tags[] = {
-     "swap_in", "swap_out", "major_fault", "minor_fault",
-     "unused", "available", "actual_balloon", "rss"
-    };
-    if ((vm->memstats[j].tag < 0) ||
-        (vm->memstats[j].tag >= STATIC_ARRAY_SIZE (tags)))
-    {
-      ERROR (PLUGIN_NAME " plugin#%s: unknown tag %i",
-             inst->tag, vm->memstats[j].tag);
-      continue;
-    }
-    val.gauge = vm->memstats[j].val * 1024;
-    virt2_submit (inst->conf, vm, "memory", tags[vm->memstats[j].tag], &val, 1);
-  }
-
   return 0;
 }
 
@@ -389,13 +384,8 @@ static int
 virt2_dispatch_balloon (virt2_instance_t *inst, const VMInfo *vm)
 {
   value_t val;
-
   val.gauge = vm->balloon.current;
-  virt2_submit (inst->conf, vm, "balloon_current", "", &val, 1);
-
-  val.gauge = vm->balloon.maximum;
-  virt2_submit (inst->conf, vm, "balloon_maximum", "", &val, 1);
-
+  virt2_submit (inst->conf, vm, "memory", "actual_balloon", &val, 1);
   return 0;
 }
 
@@ -421,7 +411,20 @@ virt2_dispatch_block (virt2_instance_t *inst, const VMInfo *vm)
     vals[1].derive = stats[j].wr_bytes;
     virt2_submit (inst->conf, vm, "disk_octets", name, vals, STATIC_ARRAY_SIZE (vals));
 
-    // TODO: {read,write,flush}Latency
+    if (inst->conf->extra_stats & ex_stats_disk) {
+      vals[0].derive = stats[j].rd_times;
+      vals[1].derive = stats[j].wr_times;
+      virt2_submit (inst->conf, vm, "disk_time", name, vals, STATIC_ARRAY_SIZE (vals));
+
+      char flush_name[DATA_MAX_NAME_LEN];
+      ssnprintf (flush_name, sizeof(flush_name), "flush-%s", name);
+
+      vals[0].derive = stats[j].fl_reqs;
+      virt2_submit (inst->conf, vm, "total_requests", flush_name, vals, 1);
+
+      vals[0].derive = stats[j].fl_times / 1000; // ns -> ms
+      virt2_submit (inst->conf, vm, "total_time_in_ms", flush_name, vals, 1);
+    }
   }
   return 0;
 }
@@ -836,6 +839,22 @@ virt2_teardown (virt2_context_t *ctx)
 
 /* *** */
 
+static unsigned int parse_ex_stats_flags(char **exstats, int numexstats)
+{
+  unsigned int ex_stats_flags = ex_stats_none;
+  for (int i = 0; i < numexstats; i++) {
+    for (int j = 0; ex_stats_table[j].name != NULL; j++) {
+      if (strcasecmp(exstats[i], ex_stats_table[j].name) == 0) {
+        INFO (PLUGIN_NAME " plugin: enabling extra stats for '%s'",
+              ex_stats_table[j].name);
+        ex_stats_flags |= ex_stats_table[j].flag;
+        break;
+      }
+    }
+  }
+  return ex_stats_flags;
+}
+
 int
 virt2_config (const char *key, const char *value)
 {
@@ -898,11 +917,6 @@ virt2_config (const char *key, const char *value)
   if (strcasecmp (key, "DebugPartitioning") == 0)
   {
     cfg->debug_partitioning = IS_TRUE (value);
-    return 0;
-  }
-  if (strcasecmp (key, "ReportByState") == 0)
-  {
-    cfg->report_by_state = IS_TRUE (value);
     return 0;
   }
 
@@ -1043,6 +1057,20 @@ virt2_config (const char *key, const char *value)
     {
       ERROR (PLUGIN_NAME " plugin: unknown InterfaceFormat: %s", value);
       return -1;
+    }
+    return 0;
+  }
+
+  if (strcasecmp(key, "ExtraStats") == 0)
+  {
+    char *localvalue = strdup(value);
+    if (localvalue != NULL)
+    {
+      char *exstats[EX_STATS_MAX_FIELDS];
+      int numexstats =
+          strsplit(localvalue, exstats, STATIC_ARRAY_SIZE(exstats));
+      cfg->extra_stats = parse_ex_stats_flags(exstats, numexstats);
+      sfree(localvalue);
     }
     return 0;
   }

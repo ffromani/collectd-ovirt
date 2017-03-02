@@ -75,7 +75,7 @@ blockinfo_parse_field(BlockStats *stats, const char *name,
     DISPATCH(wr.bytes, wr_bytes);
     DISPATCH(wr.times, wr_times);
 
-    DISPATCH(fl.bytes, fl_bytes);
+    DISPATCH(fl.reqs, fl_reqs);
     DISPATCH(fl.times, fl_times);
 
     DISPATCH(allocation, allocation);

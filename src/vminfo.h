@@ -45,7 +45,7 @@ struct BlockStats {
     unsigned long long wr_reqs;
     unsigned long long wr_bytes;
     unsigned long long wr_times;
-    unsigned long long fl_bytes;
+    unsigned long long fl_reqs;
     unsigned long long fl_times;
 
     unsigned long long allocation;
