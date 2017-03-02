@@ -7,7 +7,7 @@ It is designed and implemented using the lessons learned and
 the requirements provided by the [oVirt](http://www.ovirt.org)
 project.
 
-`virt2` requires libvirt >= 2.0.0
+`virt2` requires libvirt >= 3.0.0 and the libvirt-admin library.
 
 ## Resiliency against slow reads or slow storage
 

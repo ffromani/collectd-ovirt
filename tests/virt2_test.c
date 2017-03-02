@@ -22,12 +22,20 @@
  *   Florian octo Forster <octo at collectd.org>
  **/
 
+#include "config.h"
+
 #include "virt2_test.h"
 
 #include "../src/virt2.c" /* sic */
 #include "testing.h"
 
 #include <unistd.h>
+
+/* stub to make test happy */
+long virt2_get_libvirt_worker_pool_size (void)
+{
+  return -1;
+}
 
 enum {
     DATA_MAX_LEN = 4096,

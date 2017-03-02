@@ -41,9 +41,7 @@
 #include "collectd.h"
 
 #include "vminfo.h"
-
-
-#define PLUGIN_NAME "virt2"
+#include "virt2.h"
 
 /*
  * Synopsis:
@@ -54,18 +52,6 @@
  * </Plugin>
  */
 
-#define METADATA_VM_PARTITION_URI "http://ovirt.org/ovirtmap/tag/1.0"
-#define METADATA_VM_PARTITION_ELEMENT "tag"
-#define METADATA_VM_PARTITION_PREFIX "ovirtmap"
-
-enum {
-  INSTANCES_DEFAULT_NUM = 1,
-  BUFFER_MAX_LEN = 256,
-  PARTITION_TAG_MAX_LEN = 32,
-  INTERFACE_NUMBER_MAX_LEN = 32,
-  INSTANCES_MAX = 128,
-  VM_VALUES_NUM = 256,
-};
 
 const char *virt2_config_keys[] = {
   "Connection",
@@ -118,12 +104,6 @@ enum if_field {
   if_name,
   if_number
 };
-
-/* ExtraStats */
-#define EX_STATS_MAX_FIELDS 8
-
-
-enum ex_stats { ex_stats_none = 0, ex_stats_disk = 1, ex_stats_pcpu = 2 };
 
 struct ex_stats_item {
   const char *name;
@@ -538,14 +518,14 @@ virt2_dispatch_iface (virt2_instance_t *inst, const VMInfo *vm)
 static size_t
 virt2_get_optimal_instance_count (virt2_context_t *ctx)
 {
-  /*
-   * TODO: if ctx->conf.instances == -1, query libvirt using
-   * the ADMIN API for the worker thread pool size, and return
-   * that value.
-   */
   size_t num = ctx->conf.instances;
-  if (num == 0) {
-    num = INSTANCES_DEFAULT_NUM;
+  if (num <= 0) {
+    long ret = virt2_get_libvirt_worker_pool_size ();
+    if (ret > 0) {
+      num = (size_t)ret;
+    } else {
+      num = INSTANCES_DEFAULT_NUM;
+    }
   }
   INFO (PLUGIN_NAME " plugin: using %zu instances (configured=%zu)",
         num, ctx->conf.instances);
@@ -931,11 +911,8 @@ virt2_config (const char *key, const char *value)
       return 1;
     if (val <= 0)
     {
-      // TODO: remove once we have autotune using libvirt admin API
-      ERROR (PLUGIN_NAME " plugin: Instances <= 0 makes no sense.");
-      return 1;
-    }
-    if (val > INSTANCES_MAX)
+      INFO (PLUGIN_NAME " plugin: will autodetect the instance count");
+    } else if (val > INSTANCES_MAX)
     {
       ERROR (PLUGIN_NAME " plugin: Instances=%li > INSTANCES_MAX=%i"
              " use a lower setting or recompile the plugin.",

@@ -19,6 +19,7 @@ monitor_la_LDFLAGS = \
 	$(NULL)
 
 virt2_la_SOURCES = \
+	virt2_adm.c \
 	virt2.c \
 	vminfo.c \
 	vminfo.h \
@@ -28,12 +29,14 @@ virt2_la_CFLAGS = \
 	$(PLUGIN_CFLAGS) \
 	$(GLIB2_CFLAGS) \
 	$(LIBVIRT_CFLAGS) \
+	$(LIBVIRTADMIN_CFLAGS) \
 	$(LIBXML2_CFLAGS) \
 	$(NULL)
 virt2_la_LIBADD = \
 	$(AM_LDFLAGS) \
 	$(GLIB2_LIBS) \
 	$(LIBVIRT_LIBS) \
+	$(LIBVIRTADMIN_LIBS) \
 	$(LIBXML2_LIBS) \
 	$(NULL)
 virt2_la_LDFLAGS = \
