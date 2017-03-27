@@ -184,6 +184,21 @@ struct user_data_s
 };
 typedef struct user_data_s user_data_t;
 
+struct data_source_s {
+  char name[DATA_MAX_NAME_LEN];
+  int type;
+  double min;
+  double max;
+};
+typedef struct data_source_s data_source_t;
+
+struct data_set_s {
+  char type[DATA_MAX_NAME_LEN];
+  size_t ds_num;
+  data_source_t *ds;
+};
+typedef struct data_set_s data_set_t;
+
 
 int plugin_register_config (const char *name,
 		int (*callback) (const char *key, const char *val),
@@ -192,6 +207,11 @@ int plugin_register_init (const char *name,
         int (*callback) (void));
 int plugin_register_read (const char *name,
 		int (*callback) (void));
+int plugin_register_write(const char *name,
+        int (*callback)(const data_set_t *, const value_list_t *,
+                        user_data_t *),
+        user_data_t const *user_data);
+
 int plugin_register_complex_read (const char *group, const char *name,
         int (*callback) (user_data_t *),
 		cdtime_t interval,
@@ -205,6 +225,7 @@ int plugin_register_notification (const char *name,
 int plugin_unregister_config (const char *name);
 int plugin_unregister_init (const char *name);
 int plugin_unregister_read (const char *name);
+int plugin_unregister_write(const char *name);
 int plugin_unregister_shutdown (const char *name);
 int plugin_unregister_notification (const char *name);
 
