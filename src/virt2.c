@@ -1,6 +1,6 @@
 /**
  * collectd-ovirt - src/virt2.c
- * Copyright (C) 2016 Francesco Romani <fromani at redhat.com>
+ * Copyright (C) 2016-2017 Francesco Romani <fromani at redhat.com>
  * Based on
  * collectd - src/virt.c
  * Copyright (C) 2006-2008  Red Hat Inc.
