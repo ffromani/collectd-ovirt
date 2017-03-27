@@ -5,6 +5,7 @@ PLUGIN_LDFLAGS = -module -avoid-version -export-symbols-regex '\<module_register
 lib_LTLIBRARIES = \
 	virt2.la \
 	monitor.la \
+	null.la \
 	$(NULL)
 
 monitor_la_CFLAGS = \
@@ -15,6 +16,17 @@ monitor_la_LIBADD = \
 	$(AM_LDFLAGS) \
 	$(NULL)
 monitor_la_LDFLAGS = \
+	$(PLUGIN_LDFLAGS) \
+	$(NULL)
+
+null_la_CFLAGS = \
+	$(AM_CFLAGS) \
+	$(PLUGIN_CFLAGS) \
+	$(NULL)
+null_la_LIBADD = \
+	$(AM_LDFLAGS) \
+	$(NULL)
+null_la_LDFLAGS = \
 	$(PLUGIN_LDFLAGS) \
 	$(NULL)
 
