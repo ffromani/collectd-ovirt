@@ -645,8 +645,6 @@ virt2_acquire_domains (virt2_instance_t *inst)
   inst->domains_num = (size_t)ret;
   DEBUG (PLUGIN_NAME " plugin#%s: found %i domains", inst->tag, inst->domains_num);
 
-  if (inst->domains_num == 0)
-    return 1;
   return 0;
 }
 
@@ -818,7 +816,7 @@ virt2_read_domains (user_data_t *ud)
 
   err = virt2_acquire_domains (inst);
   if (err)
-      return -1;
+    return -1;
 
   if (inst->domains_num == 0)
     return 0; /* nothing to do here, but it's OK */
